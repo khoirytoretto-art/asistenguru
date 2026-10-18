@@ -127,8 +127,21 @@ export interface Subject {
   classIds?: string[]; // which classes take this subject
 }
 
-export type JenisKegiatan = 'KBM' | 'Asesmen';
-export type KeteranganJurnal = 'Tuntas' | 'Belum Tuntas';
+export type JenisKegiatan = 
+  | 'KBM' 
+  | 'Asesmen' 
+  | 'Pendampingan' 
+  | 'Bimbingan Diniyah' 
+  | 'Praktik Ibadah' 
+  | 'Tahsin' 
+  | 'Tahfidz' 
+  | 'UH' 
+  | 'PTS' 
+  | 'PAS' 
+  | 'REMEDIAL' 
+  | 'PRAKTIK';
+
+export type KeteranganJurnal = 'Tuntas' | 'Belum Tuntas' | 'Terkendala';
 
 export interface ClassJournalEntry {
   id: string;
@@ -136,6 +149,7 @@ export interface ClassJournalEntry {
   classId: string; // Diisi dan dicetak per-kelas
   teacherId: string;
   teacherName: string;
+  teacherRole?: TeacherRoleType; // 'GURU_BIDANG_STUDI' | 'GURU_BANTU' | 'GURU_DINIYAH'
   date: string; // YYYY-MM-DD
   jamKe: number; // 1, 2, 3, 4, ...
   subjectId: string;

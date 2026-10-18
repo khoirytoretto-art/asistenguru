@@ -138,7 +138,7 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
       {/* JUDUL REKAP JURNAL KELAS */}
       <div className="text-center mb-4">
         <h2 className="text-base font-bold underline tracking-wide uppercase text-slate-950">
-          REKAP JURNAL PEMBELAJARAN KELAS (PER-KELAS)
+          REKAP JURNAL PEMBELAJARAN KELAS (GURU STUDI, GURU BANTU &amp; GURU DINIYAH)
         </h2>
         <div className="flex justify-between items-center text-xs font-semibold mt-2 px-1 text-slate-800">
           <div>
@@ -175,9 +175,9 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '36px' }}>No</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: '130px' }}>Hari / Tanggal</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '60px' }}>Jam Ke</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Mata Pelajaran</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '190px' : '160px' }}>Nama Guru</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px' }}>Materi Pembelajaran</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Mata Pelajaran / Tugas</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Nama &amp; Peran Guru</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px' }}>Materi Pembelajaran / Bimbingan</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', textAlign: 'center', width: '110px' }}>Jenis Kegiatan</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', textAlign: 'center', width: '110px' }}>Keterangan</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '65px' }}>Paraf</th>
@@ -201,13 +201,29 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
               </tr>
             ) : (
               sortedJournals.map((j, idx) => {
-                const dateObj = new Date(j.date);
+                const parts = (j.date || '').split('T')[0].trim().split('-').map(Number);
+                const dateObj = parts.length === 3 ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date(j.date);
                 const dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'long' });
                 const formattedDate = dateObj.toLocaleDateString('id-ID', {
                   day: 'numeric',
                   month: 'short',
                   year: 'numeric',
                 });
+
+                // Deteksi peran guru
+                let roleBadgeText = 'Guru Studi';
+                let roleBadgeBg = '#e0f2fe';
+                let roleBadgeColor = '#0369a1';
+                if (j.teacherRole === 'GURU_BANTU' || j.subjectName?.toLowerCase().includes('bantu') || j.materi?.toLowerCase().includes('pendampingan')) {
+                  roleBadgeText = 'Guru Bantu';
+                  roleBadgeBg = '#f3e8ff';
+                  roleBadgeColor = '#7e22ce';
+                } else if (j.teacherRole === 'GURU_DINIYAH' || j.subjectName?.toLowerCase().includes('diniyah') || j.materi?.toLowerCase().includes('tahsin') || j.materi?.toLowerCase().includes('tahfidz')) {
+                  roleBadgeText = 'Guru Diniyah';
+                  roleBadgeBg = '#dcfce7';
+                  roleBadgeColor = '#15803d';
+                }
+
                 return (
                   <tr
                     key={j.id}
@@ -228,10 +244,24 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
                       {j.jamKe}
                     </td>
                     <td style={{ border: '1px solid #0f172a', padding: '6px 8px', verticalAlign: 'top', wordBreak: 'break-word' }}>
-                      <span className="font-semibold text-slate-900">{j.subjectName}</span>
+                      <span className="font-semibold text-slate-900">{j.subjectName || 'Pembelajaran'}</span>
                     </td>
                     <td style={{ border: '1px solid #0f172a', padding: '6px 8px', verticalAlign: 'top', wordBreak: 'break-word' }}>
-                      <span className="font-medium text-slate-800">{j.teacherName}</span>
+                      <div className="font-medium text-slate-900">{j.teacherName}</div>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          fontSize: '9px',
+                          fontWeight: 'bold',
+                          marginTop: '2px',
+                          backgroundColor: roleBadgeBg,
+                          color: roleBadgeColor,
+                        }}
+                      >
+                        {roleBadgeText}
+                      </span>
                     </td>
                     <td style={{ border: '1px solid #0f172a', padding: '6px 8px', verticalAlign: 'top', wordBreak: 'break-word' }}>
                       <p className="text-slate-900 leading-snug">{j.materi}</p>

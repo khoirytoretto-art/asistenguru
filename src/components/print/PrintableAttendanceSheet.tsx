@@ -49,6 +49,8 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     docType === 'DAFTAR_HADIR_KOKURIKULER' ||
     docType === 'DAFTAR_HADIR_EKSTRAKURIKULER';
 
+  const isUnifiedPerKelas = docType === 'DAFTAR_HADIR_GURU';
+
   const roleFilter = 
     docType === 'DAFTAR_HADIR_GURU_BANTU' ? 'GURU_BANTU' :
     docType === 'DAFTAR_HADIR_GURU_DINIYAH' ? 'GURU_DINIYAH' :
@@ -62,52 +64,72 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   // Subject assignments in this school (for identifying teachers with teaching duties)
   const schoolSubjects = StorageService.getSubjects(school.id);
 
-  // Attendance teachers with role in this school (and class if per-kelas)
-  const attendanceTeachersWithRole = attendances
-    .filter((a) => {
-      if (a.schoolId && a.schoolId !== school.id) return false;
-      
-      // If per-kelas (bukan persekolah), check classId match
-      if (!isPerSekolahOnly && selectedClassId && a.classId && a.classId !== selectedClassId) {
-        return false;
-      }
+  // Semua guru yang terhubung ke sekolah ini (dari penugasan, assignedSchoolIds, atau schoolId)
+  const schoolTeachers = teachers.filter((t) => {
+    if (!t) return false;
+    if (t.role !== 'GURU' && t.role !== 'KEPALA_SEKOLAH') return false;
+    if (t.schoolId === school.id) return true;
+    if (Array.isArray(t.assignedSchoolIds) && t.assignedSchoolIds.includes(school.id)) return true;
+    if (schoolAssignments.some((asg) => asg.teacherId === t.id)) return true;
+    if (attendances.some((a) => (a.teacherId === t.id || a.teacherName === t.name) && a.schoolId === school.id)) return true;
+    return false;
+  });
 
-      if (roleFilter === 'KOORDINATOR_KOKURIKULER') {
-        return (
-          a.roleUsed === 'KOORDINATOR_KOKURIKULER' ||
-          a.id.startsWith('att-koku-') ||
-          (a.namaKegiatan && a.namaKegiatan.toLowerCase().includes('p5'))
-        );
-      }
-      if (roleFilter === 'PEMBINA_EKSTRAKURIKULER') {
-        return (
-          a.roleUsed === 'PEMBINA_EKSTRAKURIKULER' ||
-          a.id.startsWith('att-ekskul-') ||
-          (a.namaKegiatan && !a.namaKegiatan.toLowerCase().includes('p5'))
-        );
-      }
-      if (roleFilter === 'GURU_BANTU') return a.roleUsed === 'GURU_BANTU';
-      if (roleFilter === 'GURU_DINIYAH') return a.roleUsed === 'GURU_DINIYAH';
-      return a.roleUsed === 'GURU_BIDANG_STUDI' || !a.roleUsed;
-    })
-    .map((a) => a.teacherId);
+  // Guru yang memiliki rekaman presensi pada sekolah dan kelas ini
+  const attendanceTeacherIds = new Set<string>();
+  attendances.forEach((a) => {
+    if (a.schoolId && a.schoolId !== school.id) return;
+    if (!isPerSekolahOnly && selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) return;
 
-  // 1. Base assignments filtered by role and selected class
-  const baseFilteredAssignments = schoolAssignments
-    .filter((asg) => {
-      if (!asg.roles.includes(roleFilter)) return false;
-      // If per-kelas and assignment has assigned classes, filter if defined
-      if (!isPerSekolahOnly && selectedClassId && asg.assignedClassIds && asg.assignedClassIds.length > 0) {
-        return asg.assignedClassIds.includes(selectedClassId);
+    if (docType === 'DAFTAR_HADIR_KOKURIKULER') {
+      if (
+        a.roleUsed === 'KOORDINATOR_KOKURIKULER' ||
+        a.id.startsWith('att-koku-') ||
+        (a.namaKegiatan && a.namaKegiatan.toLowerCase().includes('p5'))
+      ) {
+        if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
       }
-      return true;
-    })
-    .sort((a, b) => (a.urutan || 99) - (b.urutan || 99));
+      return;
+    }
 
-  const alreadyIncludedTeacherIds = new Set(baseFilteredAssignments.map((asg) => asg.teacherId));
+    if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER') {
+      if (
+        a.roleUsed === 'PEMBINA_EKSTRAKURIKULER' ||
+        a.id.startsWith('att-ekskul-') ||
+        (a.namaKegiatan && !a.namaKegiatan.toLowerCase().includes('p5'))
+      ) {
+        if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
+      }
+      return;
+    }
 
-  // 2. Guru Bidang Studi: teachers assigned to subjects in this school/class
-  const subjectTeacherIds = new Set(
+    if (docType === 'DAFTAR_HADIR_GURU_BANTU') {
+      if (a.roleUsed === 'GURU_BANTU') {
+        if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
+      }
+      return;
+    }
+
+    if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') {
+      if (a.roleUsed === 'GURU_DINIYAH') {
+        if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
+      }
+      return;
+    }
+
+    // Dokumen Per-Kelas Terpadu (DAFTAR_HADIR_GURU): Mencakup Guru Studi, Guru Bantu, dan Guru Diniyah
+    if (
+      a.roleUsed === 'GURU_BIDANG_STUDI' ||
+      a.roleUsed === 'GURU_BANTU' ||
+      a.roleUsed === 'GURU_DINIYAH' ||
+      !a.roleUsed
+    ) {
+      if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
+    }
+  });
+
+  // Himpunan guru yang mengajar mapel di kelas / sekolah ini
+  const subjectTeacherIds = new Set<string>(
     schoolSubjects
       .filter((subj) => {
         if (!subj.teacherId) return false;
@@ -119,41 +141,118 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
       .map((subj) => subj.teacherId)
   );
 
-  // 3. Extra teachers: only those who have attendance records or subject assignments
-  const extraTeacherCandidates = new Set<string>();
-  attendanceTeachersWithRole.forEach((tId) => extraTeacherCandidates.add(tId));
-  if (roleFilter === 'GURU_BIDANG_STUDI') {
-    subjectTeacherIds.forEach((tId) => extraTeacherCandidates.add(tId));
-  }
+  // Kumpulkan seluruh penugasan & profil guru yang relevan
+  const teacherCandidateMap = new Map<string, any>();
 
-  const extraTeacherIds = Array.from(extraTeacherCandidates).filter(
-    (tId) => !alreadyIncludedTeacherIds.has(tId)
-  );
+  // 1. Tambahkan dari schoolAssignments
+  schoolAssignments.forEach((asg) => {
+    let matchRole = false;
+    if (isUnifiedPerKelas) {
+      matchRole =
+        asg.roles.includes('GURU_BIDANG_STUDI') ||
+        asg.roles.includes('GURU_BANTU') ||
+        asg.roles.includes('GURU_DINIYAH') ||
+        subjectTeacherIds.has(asg.teacherId) ||
+        attendanceTeacherIds.has(asg.teacherId);
+    } else {
+      matchRole = asg.roles.includes(roleFilter) || attendanceTeacherIds.has(asg.teacherId);
+    }
 
-  const relevantAssignments = [
-    ...baseFilteredAssignments,
-    ...extraTeacherIds.map((tId) => {
-      const user = teachers.find((u) => u.id === tId);
-      const recentAtt = attendances.find(
-        (a) => a.teacherId === tId && (a.roleUsed === roleFilter || a.namaKegiatan)
-      );
-      return {
-        id: `synth-${tId}`,
+    if (!matchRole) return;
+
+    // Filter per-kelas jika penugasan spesifik kelas
+    if (!isPerSekolahOnly && selectedClassId && asg.assignedClassIds && asg.assignedClassIds.length > 0) {
+      if (!asg.assignedClassIds.includes(selectedClassId) && !attendanceTeacherIds.has(asg.teacherId) && !subjectTeacherIds.has(asg.teacherId)) {
+        return;
+      }
+    }
+
+    teacherCandidateMap.set(asg.teacherId, asg);
+  });
+
+  // 2. Tambahkan guru sekolah yang belum memiliki penugasan eksplisit tapi aktif mengajar/absen di kelas ini
+  schoolTeachers.forEach((t) => {
+    if (teacherCandidateMap.has(t.id)) return;
+
+    const hasAtt = attendanceTeacherIds.has(t.id);
+    const hasSubj = subjectTeacherIds.has(t.id);
+
+    if (isUnifiedPerKelas) {
+      // Pada dokumen per-kelas, sertakan guru yang aktif di kelas ini atau guru sekolah
+      if (hasAtt || hasSubj || (!selectedClassId && schoolTeachers.length <= 15)) {
+        teacherCandidateMap.set(t.id, {
+          id: `synth-${t.id}`,
+          schoolId: school.id,
+          teacherId: t.id,
+          teacherName: t.name,
+          nip: t.nip || '-',
+          jabatan: 'GURU_BIDANG_STUDI' as const,
+          roles: ['GURU_BIDANG_STUDI'],
+          urutan: 99,
+          assignedClassIds: selectedClassId ? [selectedClassId] : [],
+        });
+      }
+    } else if (hasAtt) {
+      teacherCandidateMap.set(t.id, {
+        id: `synth-${t.id}`,
         schoolId: school.id,
-        teacherId: tId,
-        teacherName: user?.name || 'Guru',
-        nip: user?.nip || '-',
-        jabatan: 'GURU_BIDANG_STUDI' as const,
+        teacherId: t.id,
+        teacherName: t.name,
+        nip: t.nip || '-',
+        jabatan: roleFilter as any,
         roles: [roleFilter],
-        namaKokurikuler: recentAtt?.namaKegiatan || 'Projek P5',
-        namaEkstrakurikuler: recentAtt?.namaKegiatan || 'Ekstrakurikuler',
         urutan: 99,
         assignedClassIds: selectedClassId ? [selectedClassId] : [],
-      };
-    }),
-  ];
+      });
+    }
+  });
 
-  // Khusus tampilan cetak akun guru: hanya tampilkan namanya masing-masing
+  // 3. JAMINAN UTAMA: Setiap guru yang memiliki rekaman presensi di kelas/sekolah ini DIJAMIN MUNCUL di baris lembar cetak
+  attendances.forEach((a) => {
+    if (a.schoolId && a.schoolId !== school.id) return;
+    if (!isPerSekolahOnly && selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) return;
+    const tid = a.teacherId;
+    if (!tid) return;
+
+    // Filter dokumen spesifik jika bukan per-kelas terpadu
+    if (docType === 'DAFTAR_HADIR_GURU_BANTU' && a.roleUsed !== 'GURU_BANTU') return;
+    if (docType === 'DAFTAR_HADIR_GURU_DINIYAH' && a.roleUsed !== 'GURU_DINIYAH') return;
+    if (docType === 'DAFTAR_HADIR_KOKURIKULER' && a.roleUsed !== 'KOORDINATOR_KOKURIKULER' && !a.id.startsWith('att-koku-')) return;
+    if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER' && a.roleUsed !== 'PEMBINA_EKSTRAKURIKULER' && !a.id.startsWith('att-ekskul-')) return;
+
+    if (!teacherCandidateMap.has(tid)) {
+      const uObj = StorageService.getUserById(tid) || teachers.find((t) => t.id === tid);
+      const roleUsed = a.roleUsed || 'GURU_BIDANG_STUDI';
+      let jbt = 'Guru Bidang Studi';
+      if (roleUsed === 'GURU_BANTU') jbt = 'Guru Bantu';
+      else if (roleUsed === 'GURU_DINIYAH') jbt = 'Guru Diniyah';
+      else if (roleUsed === 'KOORDINATOR_KOKURIKULER') jbt = 'Koord. Kokurikuler';
+      else if (roleUsed === 'PEMBINA_EKSTRAKURIKULER') jbt = 'Pembina Ekstrakurikuler';
+
+      teacherCandidateMap.set(tid, {
+        id: `att-teacher-${tid}`,
+        schoolId: school.id,
+        teacherId: tid,
+        teacherName: uObj?.name || a.teacherName || 'Guru',
+        nip: uObj?.nip || '-',
+        jabatan: jbt,
+        customJabatan: jbt,
+        roles: [roleUsed],
+        urutan: 99,
+        assignedClassIds: a.classId ? [a.classId] : (selectedClassId ? [selectedClassId] : []),
+      });
+    }
+  });
+
+  // Urutkan daftar guru
+  const relevantAssignments = Array.from(teacherCandidateMap.values()).sort((a, b) => {
+    const urutA = a.urutan !== undefined && a.urutan !== null ? a.urutan : 99;
+    const urutB = b.urutan !== undefined && b.urutan !== null ? b.urutan : 99;
+    if (urutA !== urutB) return urutA - urutB;
+    return (a.teacherName || '').localeCompare(b.teacherName || '');
+  });
+
+  // Khusus tampilan cetak akun guru mandiri: hanya tampilkan baris miliknya sendiri
   let finalAssignments = onlyTeacherId
     ? relevantAssignments.filter((asg) => asg.teacherId === onlyTeacherId)
     : relevantAssignments;
@@ -178,26 +277,44 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   }
 
   const teacherRows = finalAssignments.map((asg, index) => {
-    const user = teachers.find((t) => t.id === asg.teacherId);
+    const user = teachers.find((t) => t.id === asg.teacherId) || StorageService.getUserById(asg.teacherId);
     const teacherName = user?.name || (asg as any).teacherName || 'Guru';
-    let jabatanLabel = (asg as any).customJabatan || (asg.jabatan ? asg.jabatan.replace(/_/g, ' ') : 'Guru');
 
-    if (docType === 'DAFTAR_HADIR_KOKURIKULER') {
-      const recentAtt = attendances.find(
-        (a) =>
-          a.teacherId === asg.teacherId &&
-          (a.roleUsed === 'KOORDINATOR_KOKURIKULER' || a.id.startsWith('att-koku-'))
-      );
-      const activityName = asg.namaKokurikuler || recentAtt?.namaKegiatan || 'Projek P5';
-      jabatanLabel = `Koord. ${activityName}`;
-    } else if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER') {
-      const recentAtt = attendances.find(
-        (a) =>
-          a.teacherId === asg.teacherId &&
-          (a.roleUsed === 'PEMBINA_EKSTRAKURIKULER' || a.id.startsWith('att-ekskul-'))
-      );
-      const activityName = asg.namaEkstrakurikuler || recentAtt?.namaKegiatan || 'Ekstrakurikuler';
-      jabatanLabel = `Pembina ${activityName}`;
+    // Cari subjek atau peran spesifik di kelas/sekolah ini
+    const teacherSubjs = schoolSubjects.filter((s) => s.teacherId === asg.teacherId);
+    const recentAtt = attendances.find((a) => a.teacherId === asg.teacherId && a.schoolId === school.id);
+
+    let jabatanLabel = (asg as any).customJabatan;
+    if (!jabatanLabel) {
+      if (docType === 'DAFTAR_HADIR_KOKURIKULER') {
+        const activityName = asg.namaKokurikuler || recentAtt?.namaKegiatan || 'Projek P5';
+        jabatanLabel = `Koord. ${activityName}`;
+      } else if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER') {
+        const activityName = asg.namaEkstrakurikuler || recentAtt?.namaKegiatan || 'Ekstrakurikuler';
+        jabatanLabel = `Pembina ${activityName}`;
+      } else if (docType === 'DAFTAR_HADIR_GURU_BANTU') {
+        jabatanLabel = 'Guru Bantu';
+      } else if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') {
+        jabatanLabel = 'Guru Diniyah';
+      } else {
+        // Dokumen Per-Kelas Terpadu: Tampilkan label spesifik peran (Studi, Bantu, Diniyah)
+        const roles = asg.roles || [];
+        if (roles.includes('GURU_BANTU') && !roles.includes('GURU_BIDANG_STUDI')) {
+          jabatanLabel = 'Guru Bantu';
+        } else if (roles.includes('GURU_DINIYAH') && !roles.includes('GURU_BIDANG_STUDI')) {
+          jabatanLabel = 'Guru Diniyah';
+        } else if (roles.includes('GURU_BANTU') && roles.includes('GURU_BIDANG_STUDI')) {
+          jabatanLabel = teacherSubjs.length > 0 ? `Guru ${teacherSubjs[0].name} & Bantu` : 'Guru Studi & Bantu';
+        } else if (roles.includes('GURU_DINIYAH') && roles.includes('GURU_BIDANG_STUDI')) {
+          jabatanLabel = teacherSubjs.length > 0 ? `Guru ${teacherSubjs[0].name} & Diniyah` : 'Guru Studi & Diniyah';
+        } else if (teacherSubjs.length > 0) {
+          jabatanLabel = `Guru ${teacherSubjs[0].name}`;
+        } else if (asg.jabatan) {
+          jabatanLabel = asg.jabatan.replace(/_/g, ' ');
+        } else {
+          jabatanLabel = 'Guru Bidang Studi';
+        }
+      }
     }
 
     return {
@@ -211,48 +328,65 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
 
   const getAttendanceValue = (teacherId: string, day: number) => {
     const dayStr = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    const userObj = teachers.find((u) => u.id === teacherId);
-    const entry = attendances.find((a) => {
-      // Match by teacherId or match by teacherName
+    const userObj = teachers.find((u) => u.id === teacherId) || StorageService.getUserById(teacherId);
+
+    const matchingEntries = attendances.filter((a) => {
+      // 1. Match identitas guru
       const matchTeacher =
         a.teacherId === teacherId ||
-        (userObj && a.teacherName && a.teacherName.trim().toLowerCase() === userObj.name.trim().toLowerCase());
+        (userObj && a.teacherName && a.teacherName.trim().toLowerCase() === userObj.name.trim().toLowerCase()) ||
+        (userObj && a.teacherId === userObj.id);
       if (!matchTeacher) return false;
 
-      // Date match with padding normalization
-      const aDateNorm = a.date ? a.date.split('-').map((p) => p.padStart(2, '0')).join('-') : '';
+      // 2. Normalisasi tanggal akurat (menghapus format ISO 'T' dan spasi)
+      const rawDate = (a.date || '').split('T')[0].trim();
+      const parts = rawDate.split('-').map((p) => p.trim());
+      if (parts.length !== 3) return false;
+      const aDateNorm = `${parts[0].padStart(4, '0')}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
       if (aDateNorm !== dayStr) return false;
 
+      // 3. Verifikasi sekolah
       if (a.schoolId && a.schoolId !== school.id) return false;
 
-      // Filter per-kelas for KBM, Guru Bantu, Guru Diniyah
+      // 4. Verifikasi kelas jika dokumen per-kelas
       if (!isPerSekolahOnly) {
-        if (selectedClassId && a.classId && a.classId !== selectedClassId) {
+        if (selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) {
           return false;
         }
       }
 
-      if (roleFilter === 'KOORDINATOR_KOKURIKULER') {
+      // 5. Verifikasi peran sesuai jenis dokumen
+      if (docType === 'DAFTAR_HADIR_KOKURIKULER') {
         return (
           a.roleUsed === 'KOORDINATOR_KOKURIKULER' ||
           a.id.startsWith('att-koku-') ||
           (a.namaKegiatan && a.namaKegiatan.toLowerCase().includes('p5'))
         );
       }
-      if (roleFilter === 'PEMBINA_EKSTRAKURIKULER') {
+      if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER') {
         return (
           a.roleUsed === 'PEMBINA_EKSTRAKURIKULER' ||
           a.id.startsWith('att-ekskul-') ||
           (a.namaKegiatan && !a.namaKegiatan.toLowerCase().includes('p5'))
         );
       }
-      if (roleFilter === 'GURU_BANTU') return a.roleUsed === 'GURU_BANTU';
-      if (roleFilter === 'GURU_DINIYAH') return a.roleUsed === 'GURU_DINIYAH';
-      return a.roleUsed === 'GURU_BIDANG_STUDI' || !a.roleUsed;
+      if (docType === 'DAFTAR_HADIR_GURU_BANTU') return a.roleUsed === 'GURU_BANTU';
+      if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') return a.roleUsed === 'GURU_DINIYAH';
+
+      // Dokumen per-kelas terpadu (DAFTAR_HADIR_GURU): Guru Study, Guru Bantu, dan Guru Diniyah masuk semua
+      return (
+        a.roleUsed === 'GURU_BIDANG_STUDI' ||
+        a.roleUsed === 'GURU_BANTU' ||
+        a.roleUsed === 'GURU_DINIYAH' ||
+        !a.roleUsed
+      );
     });
 
-    if (!entry) return '';
-    return entry.timeRangeFormatted || `${entry.jamMasuk}-${entry.jamKeluar}`;
+    if (matchingEntries.length === 0) return '';
+    // Jika ada lebih dari satu rekaman (misal sesi masuk ganda/jam berbeda), gabungkan dengan rapi
+    return matchingEntries
+      .map((e) => e.timeRangeFormatted || `${e.jamMasuk}-${e.jamKeluar}`)
+      .join(' / ');
   };
 
   const getDocTitle = () => {
@@ -266,7 +400,7 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
       case 'DAFTAR_HADIR_EKSTRAKURIKULER':
         return 'DAFTAR HADIR PEMBINA EKSTRAKURIKULER - TINGKAT PERSEKOLAH';
       default:
-        return 'DAFTAR HADIR GURU BIDANG STUDI (PER-KELAS)';
+        return 'DAFTAR HADIR GURU KELAS (STUDI, BANTU & DINIYAH)';
     }
   };
 

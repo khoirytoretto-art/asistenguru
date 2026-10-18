@@ -739,16 +739,16 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
                 onChange={(e) => setDocType(e.target.value as DokumenCetakType)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold bg-white text-indigo-950"
               >
-                <option value="DAFTAR_HADIR_GURU">Daftar Hadir Guru Bidang Studi (Per-Kelas)</option>
+                <option value="DAFTAR_HADIR_GURU">Daftar Hadir Terpadu Per-Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
+                <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
                 {currentSchool.jenjang === 'SD' && (
                   <>
-                    <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Guru Bantu (Per-Kelas)</option>
-                    <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Guru Diniyah (Per-Kelas)</option>
+                    <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Khusus Guru Bantu (Per-Kelas)</option>
+                    <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Khusus Guru Diniyah (Per-Kelas)</option>
                   </>
                 )}
-                <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler (Hanya Persekolah)</option>
+                <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler P5 (Hanya Persekolah)</option>
                 <option value="DAFTAR_HADIR_EKSTRAKURIKULER">Daftar Hadir Ekstrakurikuler (Hanya Persekolah)</option>
-                <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Per-Kelas)</option>
               </select>
             </div>
 
@@ -812,10 +812,12 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
                   school={currentSchool}
                   className={selectedClassName}
                   journals={allJournals.filter((j) => {
-                    if (selectedClassId && j.classId !== selectedClassId) return false;
+                    if (selectedClassId && j.classId !== selectedClassId && j.classId !== selectedClassName) return false;
                     if (!j.date) return true;
-                    const [year, month] = j.date.split('-');
-                    return parseInt(year, 10) === selectedYear && parseInt(month, 10) === selectedMonth;
+                    const cleanDate = j.date.split('T')[0].trim();
+                    const parts = cleanDate.split('-');
+                    if (parts.length < 2) return false;
+                    return parseInt(parts[0], 10) === selectedYear && parseInt(parts[1], 10) === selectedMonth;
                   })}
                   periodeText={`Bulan ${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][selectedMonth - 1]} ${selectedYear}`}
                   paperSize={paperSize}

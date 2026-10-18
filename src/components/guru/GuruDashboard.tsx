@@ -142,6 +142,8 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
   const [journalKeterangan, setJournalKeterangan] = useState<KeteranganJurnal>('Tuntas');
   const [journalDate, setJournalDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [journalCatatan, setJournalCatatan] = useState<string>('');
+  const [bantuSubjectCustom, setBantuSubjectCustom] = useState<string>('Pendampingan Belajar');
+  const [diniyahMateriCustom, setDiniyahMateriCustom] = useState<string>('Tahsin & Bimbingan Ibadah');
 
   // FORM KOKURIKULER (P5) - HANYA PER-SEKOLAH
   const [kokuDate, setKokuDate] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -376,12 +378,21 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
     };
 
     StorageService.addAttendance(newAttendance);
-    showToast('Absen Berhasil');
+    // Otomatis sinkronkan filter cetak agar guru langsung melihat rekaman barunya di lembar cetak
+    setCetakClassId(selectedClassId);
+    if (absenDate) {
+      const parts = absenDate.split('-');
+      if (parts.length === 3) {
+        setCetakYear(parseInt(parts[0], 10));
+        setCetakMonth(parseInt(parts[1], 10));
+      }
+    }
+    showToast('Absen Berhasil Disimpan');
     setAbsenKeterangan('');
     onDataChanged();
   };
 
-  // SUBMIT FORM JURNAL KBM (KHUSUS GURU BIDANG STUDI - PER-KELAS)
+  // SUBMIT FORM JURNAL PEMBELAJARAN (GURU STUDI, GURU BANTU, GURU DINIYAH - PER-KELAS)
   const handleSubmitJurnalKelas = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSchool) {
@@ -392,17 +403,28 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
       showToast('Harap pilih kelas pembelajaran (wajib per-kelas).');
       return;
     }
-    if (!journalSubjectId || schoolSubjects.length === 0) {
+
+    // Untuk Guru Studi wajib ada mata pelajaran. Untuk Guru Bantu & Diniyah opsional/otomatis
+    if (selectedRole === 'GURU_BIDANG_STUDI' && (!journalSubjectId || schoolSubjects.length === 0)) {
       showToast('belum ada tugas mengajar. Harap hubungi Admin Sekolah untuk menetapkan mata pelajaran Anda.');
       return;
     }
     if (!journalMateri.trim()) {
-      showToast('Harap isi materi / kompetensi dasar yang diajarkan.');
+      showToast('Harap isi materi / kompetensi yang diajarkan atau didampingi.');
       return;
     }
 
     const targetClass = schoolClasses.find((c) => c.id === selectedClassId);
     const targetSubj = schoolSubjects.find((s) => s.id === journalSubjectId);
+
+    let finalSubjectName = 'Pembelajaran';
+    if (selectedRole === 'GURU_BIDANG_STUDI') {
+      finalSubjectName = targetSubj ? targetSubj.name : 'Mata Pelajaran';
+    } else if (selectedRole === 'GURU_BANTU') {
+      finalSubjectName = targetSubj ? `Pendampingan ${targetSubj.name}` : (bantuSubjectCustom || 'Pendampingan Belajar');
+    } else if (selectedRole === 'GURU_DINIYAH') {
+      finalSubjectName = targetSubj ? targetSubj.name : (diniyahMateriCustom || 'Bimbingan Diniyah');
+    }
 
     const newJournal: ClassJournalEntry = {
       id: `jrn-${Date.now()}`,
@@ -410,10 +432,11 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
       classId: selectedClassId, // Wajib per-kelas
       teacherId: currentUser.id,
       teacherName: currentUser.name,
+      teacherRole: selectedRole,
       date: journalDate,
       jamKe: Number(journalJamKe),
-      subjectId: journalSubjectId,
-      subjectName: targetSubj ? targetSubj.name : 'Mata Pelajaran',
+      subjectId: journalSubjectId || `subj-${selectedRole.toLowerCase()}`,
+      subjectName: finalSubjectName,
       materi: journalMateri,
       jenisKegiatan: journalJenisKegiatan,
       keterangan: journalKeterangan,
@@ -422,7 +445,17 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
     };
 
     StorageService.addJournal(newJournal);
-    showToast(`Jurnal KBM ${targetSubj?.name} di ${targetClass?.name} berhasil disimpan!`);
+    // Otomatis sinkronkan filter cetak agar guru langsung melihat rekaman barunya di lembar cetak
+    setCetakClassId(selectedClassId);
+    setCetakDocType('JURNAL_KELAS');
+    if (journalDate) {
+      const parts = journalDate.split('-');
+      if (parts.length === 3) {
+        setCetakYear(parseInt(parts[0], 10));
+        setCetakMonth(parseInt(parts[1], 10));
+      }
+    }
+    showToast(`Jurnal ${finalSubjectName} di ${targetClass?.name} berhasil disimpan!`);
     setJournalMateri('');
     setJournalCatatan('');
     onDataChanged();
@@ -628,10 +661,14 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
   const cetakClassName = cetakTargetClass ? cetakTargetClass.name : undefined;
 
   const filteredCetakJournals = myJournals.filter((j) => {
-    if (cetakClassId && j.classId !== cetakClassId) return false;
-    const d = new Date(j.date);
-    if (d.getMonth() + 1 !== cetakMonth) return false;
-    if (d.getFullYear() !== cetakYear) return false;
+    if (cetakClassId && j.classId !== cetakClassId && j.classId !== cetakClassName) return false;
+    const cleanDate = (j.date || '').split('T')[0].trim();
+    const parts = cleanDate.split('-');
+    if (parts.length === 3) {
+      const yr = parseInt(parts[0], 10);
+      const mo = parseInt(parts[1], 10);
+      if (yr !== cetakYear || mo !== cetakMonth) return false;
+    }
     return true;
   });
 
@@ -994,8 +1031,8 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
               </span>
             </button>
 
-            {/* TAB 2: JURNAL PEMBELAJARAN (HANYA DITAMPILKAN UNTUK GURU BIDANG STUDI) */}
-            {selectedRole === 'GURU_BIDANG_STUDI' && (
+            {/* TAB 2: JURNAL PEMBELAJARAN (UNTUK GURU BIDANG STUDI, GURU BANTU, & GURU DINIYAH) */}
+            {(selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH') && (
               <button
                 type="button"
                 onClick={() => setActiveDutyTab('JURNAL')}
@@ -1006,7 +1043,11 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                 }`}
               >
                 <BookOpen className="w-4 h-4 shrink-0" />
-                <span className="truncate">2. Isi Jurnal KBM</span>
+                <span className="truncate">
+                  {selectedRole === 'GURU_BIDANG_STUDI' && '2. Isi Jurnal KBM'}
+                  {selectedRole === 'GURU_BANTU' && '2. Isi Jurnal Pendampingan'}
+                  {selectedRole === 'GURU_DINIYAH' && '2. Isi Jurnal Diniyah'}
+                </span>
               </button>
             )}
 
@@ -1022,7 +1063,9 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
             >
               <Printer className="w-4 h-4 shrink-0" />
               <span className="truncate">
-                {selectedRole === 'GURU_BIDANG_STUDI' ? '3. Riwayat & Cetak' : '2. Riwayat & Cetak'}
+                {(selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH')
+                  ? '3. Riwayat & Cetak'
+                  : '2. Riwayat & Cetak'}
               </span>
             </button>
           </div>
@@ -1468,22 +1511,34 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
           )}
 
           {/* ----------------------------------------------------------------- */}
-          {/* KONTEN SUB-TAB 2: FORM ISI JURNAL KBM (KHUSUS GURU BIDANG STUDI)   */}
+          {/* KONTEN SUB-TAB 2: FORM ISI JURNAL (GURU STUDI, BANTU, & DINIYAH)  */}
           {/* ----------------------------------------------------------------- */}
-          {activeDutyTab === 'JURNAL' && selectedRole === 'GURU_BIDANG_STUDI' && (
+          {activeDutyTab === 'JURNAL' && (selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH') && (
             <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
                 <div>
                   <h3 className="text-base sm:text-xl font-black text-slate-900 flex items-center gap-2">
                     <BookOpen className="w-5 h-5 text-emerald-600" />
-                    <span>Form Jurnal Pembelajaran KBM (Dibuat Per-Kelas)</span>
+                    <span>
+                      {selectedRole === 'GURU_BIDANG_STUDI' && 'Form Jurnal Pembelajaran KBM (Dibuat Per-Kelas)'}
+                      {selectedRole === 'GURU_BANTU' && 'Form Jurnal Pendampingan Guru Bantu (Dibuat Per-Kelas)'}
+                      {selectedRole === 'GURU_DINIYAH' && 'Form Jurnal Bimbingan Diniyah (Dibuat Per-Kelas)'}
+                    </span>
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                    Hanya guru dengan tugas Guru Bidang Studi yang mengisi jurnal pembelajaran kelas.
+                    {selectedRole === 'GURU_BIDANG_STUDI' && 'Pencatatan materi kompetensi dasar pembelajaran kelas reguler per-kelas.'}
+                    {selectedRole === 'GURU_BANTU' && 'Pencatatan materi bimbingan asistensi belajar / inklusi siswa per-kelas.'}
+                    {selectedRole === 'GURU_DINIYAH' && 'Pencatatan materi tahsin, tahfidz, fikih ibadah & bimbingan diniyah per-kelas.'}
                   </p>
                 </div>
-                <span className="text-xs px-3 py-1 rounded-full bg-blue-100 text-blue-900 font-bold border border-blue-200 shrink-0">
-                  Guru Bidang Studi
+                <span className={`text-xs px-3 py-1 rounded-full font-bold border shrink-0 ${
+                  selectedRole === 'GURU_BANTU'
+                    ? 'bg-purple-100 text-purple-900 border-purple-200'
+                    : selectedRole === 'GURU_DINIYAH'
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
+                    : 'bg-blue-100 text-blue-900 border-blue-200'
+                }`}>
+                  {getRoleLabel(selectedRole)}
                 </span>
               </div>
 
@@ -1513,7 +1568,7 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
-                      Tanggal Mengajar
+                      Tanggal Pelaksanaan
                     </label>
                     <input
                       type="date"
@@ -1541,63 +1596,124 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                     </select>
                   </div>
 
+                  {/* KELOMPOK PILIHAN BIDANG/MATA PELAJARAN */}
                   <div className="sm:col-span-2">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="block font-bold text-slate-700 text-sm sm:text-base">
-                        Mata Pelajaran:
-                      </label>
-                      {schoolSubjects.length === 0 && (
-                        <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300">
-                          belum ada tugas mengajar
-                        </span>
-                      )}
-                    </div>
-                    <select
-                      required
-                      disabled={schoolSubjects.length === 0}
-                      value={journalSubjectId}
-                      onChange={(e) => setJournalSubjectId(e.target.value)}
-                      className={`w-full px-4 py-3.5 rounded-xl border font-bold text-base min-h-[48px] ${
-                        schoolSubjects.length === 0
-                          ? 'bg-amber-50/70 border-amber-300 text-amber-900 cursor-not-allowed'
-                          : 'border-slate-300 text-slate-900 bg-white'
-                      }`}
-                    >
-                      {schoolSubjects.length === 0 ? (
-                        <option value="">belum ada tugas mengajar</option>
-                      ) : (
-                        schoolSubjects.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} {s.code ? `(${s.code})` : ''}
-                          </option>
-                        ))
-                      )}
-                    </select>
-
-                    {schoolSubjects.length === 0 && (
-                      <div className="mt-2.5 p-3.5 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 flex items-start gap-2">
-                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                        <div className="text-xs sm:text-sm">
-                          <p className="font-bold text-amber-950">belum ada tugas mengajar</p>
-                          <p className="text-amber-800 mt-0.5 leading-relaxed">
-                            Administrator Sekolah belum menginputkan mata pelajaran untuk Anda di {selectedSchool.name}. Silakan hubungi admin sekolah agar mata pelajaran Anda didaftarkan.
-                          </p>
+                    {selectedRole === 'GURU_BIDANG_STUDI' && (
+                      <>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="block font-bold text-slate-700 text-sm sm:text-base">
+                            Mata Pelajaran:
+                          </label>
+                          {schoolSubjects.length === 0 && (
+                            <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300">
+                              belum ada tugas mengajar
+                            </span>
+                          )}
                         </div>
-                      </div>
+                        <select
+                          required
+                          disabled={schoolSubjects.length === 0}
+                          value={journalSubjectId}
+                          onChange={(e) => setJournalSubjectId(e.target.value)}
+                          className={`w-full px-4 py-3.5 rounded-xl border font-bold text-base min-h-[48px] ${
+                            schoolSubjects.length === 0
+                              ? 'bg-amber-50/70 border-amber-300 text-amber-900 cursor-not-allowed'
+                              : 'border-slate-300 text-slate-900 bg-white'
+                          }`}
+                        >
+                          {schoolSubjects.length === 0 ? (
+                            <option value="">belum ada tugas mengajar</option>
+                          ) : (
+                            schoolSubjects.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} {s.code ? `(${s.code})` : ''}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        {schoolSubjects.length === 0 && (
+                          <div className="mt-2.5 p-3.5 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 flex items-start gap-2">
+                            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="text-xs sm:text-sm">
+                              <p className="font-bold text-amber-950">belum ada tugas mengajar</p>
+                              <p className="text-amber-800 mt-0.5 leading-relaxed">
+                                Administrator Sekolah belum menginputkan mata pelajaran untuk Anda di {selectedSchool.name}. Silakan hubungi admin sekolah agar mata pelajaran Anda didaftarkan.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {selectedRole === 'GURU_BANTU' && (
+                      <>
+                        <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
+                          Fokus / Bidang Pendampingan Belajar:
+                        </label>
+                        <select
+                          value={bantuSubjectCustom}
+                          onChange={(e) => setBantuSubjectCustom(e.target.value)}
+                          className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-bold text-base text-purple-950 bg-white min-h-[48px]"
+                        >
+                          <option value="Pendampingan Belajar Siswa (KBM)">Pendampingan Belajar Siswa (KBM)</option>
+                          <option value="Pendampingan Belajar Inklusi / ABK">Pendampingan Belajar Inklusi / ABK</option>
+                          <option value="Bimbingan Remedial &amp; Pengayaan">Bimbingan Remedial &amp; Pengayaan</option>
+                          <option value="Asistensi Guru Kelas &amp; Literasi">Asistensi Guru Kelas &amp; Literasi</option>
+                          <option value="Pendampingan Numerasi Dasar">Pendampingan Numerasi Dasar</option>
+                          {schoolSubjects.map((s) => (
+                            <option key={s.id} value={`Pendampingan ${s.name}`}>
+                              Pendampingan Mapel {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+
+                    {selectedRole === 'GURU_DINIYAH' && (
+                      <>
+                        <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
+                          Bidang / Materi Diniyah:
+                        </label>
+                        <select
+                          value={diniyahMateriCustom}
+                          onChange={(e) => setDiniyahMateriCustom(e.target.value)}
+                          className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-bold text-base text-emerald-950 bg-white min-h-[48px]"
+                        >
+                          <option value="Tahsin &amp; Tilawah Al-Qur'an">Tahsin &amp; Tilawah Al-Qur'an</option>
+                          <option value="Tahfidz Juz 'Amma / Al-Qur'an">Tahfidz Juz 'Amma / Al-Qur'an</option>
+                          <option value="Fiqih &amp; Praktik Ibadah Sholat">Fiqih &amp; Praktik Ibadah Sholat</option>
+                          <option value="Bimbingan Doa &amp; Hadits Harian">Bimbingan Doa &amp; Hadits Harian</option>
+                          <option value="Bahasa Arab &amp; BTA">Bahasa Arab &amp; BTA</option>
+                          <option value="Aqidah Akhlak &amp; Karakter">Aqidah Akhlak &amp; Karakter</option>
+                          {schoolSubjects.map((s) => (
+                            <option key={s.id} value={s.name}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </>
                     )}
                   </div>
                 </div>
 
                 <div>
                   <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
-                    Materi / Kompetensi yang Diajarkan *
+                    {selectedRole === 'GURU_BANTU' && 'Materi / Rincian Kegiatan Pendampingan Siswa *'}
+                    {selectedRole === 'GURU_DINIYAH' && 'Materi / Ayat / Capaian Bimbingan Diniyah *'}
+                    {selectedRole === 'GURU_BIDANG_STUDI' && 'Materi / Kompetensi yang Diajarkan *'}
                   </label>
                   <textarea
                     required
                     rows={3}
                     value={journalMateri}
                     onChange={(e) => setJournalMateri(e.target.value)}
-                    placeholder="Contoh: Bab 2 Perkalian dan Pembagian Pecahan..."
+                    placeholder={
+                      selectedRole === 'GURU_BANTU'
+                        ? 'Contoh: Mendampingi 4 siswa yang belum memahami materi pecahan, membimbing latihan soal mandiri...'
+                        : selectedRole === 'GURU_DINIYAH'
+                        ? 'Contoh: Surat An-Naba ayat 1-15, bimbingan makhraj huruf dan kelancaran tajwid...'
+                        : 'Contoh: Bab 2 Perkalian dan Pembagian Pecahan...'
+                    }
                     className="w-full px-4 py-3.5 rounded-2xl border border-slate-300 text-base leading-relaxed"
                   />
                 </div>
@@ -1613,11 +1729,23 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                       className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-semibold text-base min-h-[48px]"
                     >
                       <option value="KBM">KBM (Kegiatan Belajar Mengajar)</option>
+                      {selectedRole === 'GURU_BANTU' && (
+                        <option value="Pendampingan">Pendampingan Belajar / Inklusi</option>
+                      )}
+                      {selectedRole === 'GURU_DINIYAH' && (
+                        <>
+                          <option value="Tahsin">Tahsin / Tilawah</option>
+                          <option value="Tahfidz">Tahfidz / Setoran Hafalan</option>
+                          <option value="Praktik Ibadah">Praktik Ibadah / Sholat</option>
+                          <option value="Bimbingan Diniyah">Bimbingan Diniyah</option>
+                        </>
+                      )}
                       <option value="UH">UH (Ulangan Harian)</option>
                       <option value="PTS">PTS (Penilaian Tengah Semester)</option>
                       <option value="PAS">PAS (Penilaian Akhir Semester)</option>
                       <option value="REMEDIAL">Remedial / Pengayaan</option>
                       <option value="PRAKTIK">Praktik / Eksperimen</option>
+                      <option value="Asesmen">Asesmen / Evaluasi</option>
                     </select>
                   </div>
 
@@ -1645,7 +1773,7 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                     type="text"
                     value={journalCatatan}
                     onChange={(e) => setJournalCatatan(e.target.value)}
-                    placeholder="Contoh: 3 siswa izin sakit, suasana kelas aktif"
+                    placeholder="Contoh: 3 siswa izin sakit, suasana kelas aktif dan tertib"
                     className="w-full px-4 py-3.5 rounded-xl border border-slate-300 text-base min-h-[48px]"
                   />
                 </div>
@@ -1653,19 +1781,27 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                 <div className="pt-2">
                   <button
                     type="submit"
-                    disabled={schoolSubjects.length === 0}
+                    disabled={selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0}
                     className={`w-full py-4 px-6 font-black rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-base sm:text-lg min-h-[52px] ${
-                      schoolSubjects.length === 0
+                      selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                        : selectedRole === 'GURU_BANTU'
+                        ? 'bg-purple-700 hover:bg-purple-800 text-white shadow-purple-700/25 cursor-pointer active:scale-98'
+                        : selectedRole === 'GURU_DINIYAH'
+                        ? 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-700/25 cursor-pointer active:scale-98'
                         : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-700/25 cursor-pointer active:scale-98'
                     }`}
                   >
-                    {schoolSubjects.length === 0 ? (
+                    {selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0 ? (
                       <span>belum ada tugas mengajar</span>
                     ) : (
                       <>
                         <Save className="w-5 h-5" />
-                        <span>Simpan Jurnal KBM Kelas Ini</span>
+                        <span>
+                          {selectedRole === 'GURU_BIDANG_STUDI' && 'Simpan Jurnal KBM Kelas Ini'}
+                          {selectedRole === 'GURU_BANTU' && 'Simpan Jurnal Pendampingan Kelas Ini'}
+                          {selectedRole === 'GURU_DINIYAH' && 'Simpan Jurnal Bimbingan Diniyah Kelas Ini'}
+                        </span>
                       </>
                     )}
                   </button>
@@ -1813,10 +1949,16 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                       </>
                     )}
                     {selectedRole === 'GURU_BANTU' && (
-                      <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Guru Bantu (Per-Kelas)</option>
+                      <>
+                        <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Guru Bantu (Per-Kelas)</option>
+                        <option value="JURNAL_KELAS">Jurnal Pendampingan Kelas (Per-Kelas)</option>
+                      </>
                     )}
                     {selectedRole === 'GURU_DINIYAH' && (
-                      <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Guru Diniyah (Per-Kelas)</option>
+                      <>
+                        <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Guru Diniyah (Per-Kelas)</option>
+                        <option value="JURNAL_KELAS">Jurnal Bimbingan Diniyah (Per-Kelas)</option>
+                      </>
                     )}
                     {selectedRole === 'KOORDINATOR_KOKURIKULER' && (
                       <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler (Persekolah)</option>

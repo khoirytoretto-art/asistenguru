@@ -244,6 +244,85 @@ function mergeUsers(existingList: any[] = [], incomingList: any[] = [], deletedS
   return Array.from(map.values());
 }
 
+// Smart merger khusus data Attendances: deduplikasi ketat berdasarkan tanggal + guru + peran (Studi/Bantu/Diniyah) + kelas/sekolah + waktu
+function mergeAttendances(existingList: any[] = [], incomingList: any[] = [], deletedSet?: Set<string>): any[] {
+  const map = new Map<string, any>();
+  const all = [...(existingList || []), ...(incomingList || [])];
+  all.forEach((item) => {
+    if (!item || !item.id || PURGED_DUMMY_IDS.has(item.id) || (deletedSet && deletedSet.has(item.id))) return;
+    const role = item.roleUsed || 'GURU_BIDANG_STUDI';
+    const isPerSchool = role === 'KOORDINATOR_KOKURIKULER' || role === 'PEMBINA_EKSTRAKURIKULER';
+    const normDate = (item.date || '').split('T')[0].trim();
+    const classKey = isPerSchool ? 'PERSEKOLAH' : (item.classId || 'ALL');
+    // timeKey membedakan sesi jika guru memiliki jam masuk/keluar terpisah di kelas yang sama
+    const timeKey = (item.jamMasuk && item.jamKeluar) ? `${item.jamMasuk}-${item.jamKeluar}` : (item.id || '');
+    // Kunci unik menyertakan role agar Guru Studi, Guru Bantu, dan Guru Diniyah TIDAK saling menimpa!
+    const logicalKey = `${item.schoolId || 'SCH'}_${item.teacherId || item.teacherName}_${normDate}_${role}_${classKey}_${timeKey}`;
+    const prev = map.get(logicalKey);
+    if (!prev) {
+      map.set(logicalKey, item);
+    } else {
+      const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
+      const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      if (currTime >= prevTime) {
+        map.set(logicalKey, { ...prev, ...item });
+      }
+    }
+  });
+  return Array.from(map.values());
+}
+
+// Smart merger khusus data Jurnal Pembelajaran: deduplikasi sesi KBM/Pendampingan/Diniyah per kelas, tanggal, jam ke, guru, dan peran
+function mergeJournals(existingList: any[] = [], incomingList: any[] = [], deletedSet?: Set<string>): any[] {
+  const map = new Map<string, any>();
+  const all = [...(existingList || []), ...(incomingList || [])];
+  all.forEach((item) => {
+    if (!item || !item.id || PURGED_DUMMY_IDS.has(item.id) || (deletedSet && deletedSet.has(item.id))) return;
+    const normDate = (item.date || '').split('T')[0].trim();
+    const jamKe = item.jamKe || 0;
+    const teacherKey = item.teacherId || item.teacherName || 'GURU';
+    const classKey = item.classId || 'ALL';
+    const roleKey = item.teacherRole || 'GURU_BIDANG_STUDI';
+    const subjectKey = item.subjectId || item.subjectName || 'MAPEL';
+    const logicalKey = `${item.schoolId || 'SCH'}_${classKey}_${normDate}_${jamKe}_${teacherKey}_${roleKey}_${subjectKey}`;
+    const prev = map.get(logicalKey);
+    if (!prev) {
+      map.set(logicalKey, item);
+    } else {
+      const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
+      const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      if (currTime >= prevTime) {
+        map.set(logicalKey, { ...prev, ...item });
+      }
+    }
+  });
+  return Array.from(map.values());
+}
+
+// Smart merger khusus data Assignments: satu guru hanya punya satu penugasan unik per sekolah
+function mergeAssignments(existingList: any[] = [], incomingList: any[] = [], deletedSet?: Set<string>): any[] {
+  const map = new Map<string, any>();
+  const all = [...(existingList || []), ...(incomingList || [])];
+  all.forEach((item) => {
+    if (!item || !item.id || PURGED_DUMMY_IDS.has(item.id) || (deletedSet && deletedSet.has(item.id))) return;
+    const logicalKey = `${item.schoolId}_${item.teacherId}`;
+    const prev = map.get(logicalKey);
+    if (!prev) {
+      map.set(logicalKey, item);
+    } else {
+      const mergedRoles = Array.from(new Set([...(prev.roles || []), ...(item.roles || [])]));
+      const mergedClassIds = Array.from(new Set([...(prev.assignedClassIds || []), ...(item.assignedClassIds || [])]));
+      map.set(logicalKey, {
+        ...prev,
+        ...item,
+        roles: mergedRoles,
+        assignedClassIds: mergedClassIds,
+      });
+    }
+  });
+  return Array.from(map.values());
+}
+
 let appData = loadStoredData();
 // In-memory heartbeat tracker untuk status live online realtime
 const activeUserHeartbeats = new Map<string, number>();
@@ -293,7 +372,7 @@ async function startServer() {
     });
   });
 
-  // 2. Smart Sync dataset (menggabungkan data, menghormati data terhapus)
+  // 2. Smart Sync dataset (menggabungkan data, menghormati data terhapus, anti duplikasi)
   app.post('/api/data', (req, res) => {
     if (req.body && typeof req.body === 'object') {
       const body = req.body;
@@ -312,9 +391,9 @@ async function startServer() {
         users: Array.isArray(body.users) ? mergeUsers(appData.users, body.users, currentDeleted) : appData.users,
         classes: Array.isArray(body.classes) ? mergeCollection(appData.classes, body.classes, currentDeleted) : appData.classes,
         subjects: Array.isArray(body.subjects) ? mergeCollection(appData.subjects, body.subjects, currentDeleted) : appData.subjects,
-        assignments: Array.isArray(body.assignments) ? mergeCollection(appData.assignments, body.assignments, currentDeleted) : appData.assignments,
-        journals: Array.isArray(body.journals) ? mergeCollection(appData.journals, body.journals, currentDeleted) : appData.journals,
-        attendances: Array.isArray(body.attendances) ? mergeCollection(appData.attendances, body.attendances, currentDeleted) : appData.attendances,
+        assignments: Array.isArray(body.assignments) ? mergeAssignments(appData.assignments, body.assignments, currentDeleted) : appData.assignments,
+        journals: Array.isArray(body.journals) ? mergeJournals(appData.journals, body.journals, currentDeleted) : appData.journals,
+        attendances: Array.isArray(body.attendances) ? mergeAttendances(appData.attendances, body.attendances, currentDeleted) : appData.attendances,
         resetRequests: Array.isArray(body.resetRequests) ? mergeCollection(appData.resetRequests, body.resetRequests, currentDeleted) : appData.resetRequests,
         adminChatConfig: body.adminChatConfig || appData.adminChatConfig,
         broadcastMessage: body.broadcastMessage || appData.broadcastMessage,
@@ -326,12 +405,12 @@ async function startServer() {
     res.status(400).json({ success: false, message: 'Data tidak valid' });
   });
 
-  // 2a. Endpoint khusus simpan jurnal langsung (instan & terjamin aman)
+  // 2a. Endpoint khusus simpan jurnal langsung (instan, terjamin aman & anti duplikasi)
   app.post('/api/journals', (req, res) => {
     const incoming = Array.isArray(req.body) ? req.body : (req.body ? [req.body] : []);
     if (incoming.length === 0) return res.status(400).json({ success: false, message: 'Tidak ada data jurnal' });
 
-    appData.journals = mergeCollection(appData.journals || [], incoming);
+    appData.journals = mergeJournals(appData.journals || [], incoming);
     saveStoredData(appData, true);
     return res.json({ success: true, count: appData.journals.length, message: 'Jurnal berhasil disimpan permanen di server pusat' });
   });
@@ -340,12 +419,12 @@ async function startServer() {
     res.json(appData.journals || []);
   });
 
-  // 2b. Endpoint khusus simpan presensi langsung (instan & terjamin aman)
+  // 2b. Endpoint khusus simpan presensi langsung (instan, terjamin aman & anti duplikasi)
   app.post('/api/attendances', (req, res) => {
     const incoming = Array.isArray(req.body) ? req.body : (req.body ? [req.body] : []);
     if (incoming.length === 0) return res.status(400).json({ success: false, message: 'Tidak ada data presensi' });
 
-    appData.attendances = mergeCollection(appData.attendances || [], incoming);
+    appData.attendances = mergeAttendances(appData.attendances || [], incoming);
     saveStoredData(appData, true);
     return res.json({ success: true, count: appData.attendances.length, message: 'Presensi berhasil disimpan permanen di server pusat' });
   });

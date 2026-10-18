@@ -506,23 +506,31 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
   };
 
   // 7. FILTERING LOGIC
+  const selectedClassName = classes.find((c) => c.id === selectedClassId)?.name;
+
   const filteredJournals = journals.filter((j) => {
-    if (selectedClassId && j.classId !== selectedClassId) return false;
+    if (selectedClassId && j.classId !== selectedClassId && j.classId !== selectedClassName) return false;
+    const cleanDate = (j.date || '').split('T')[0].trim();
     if (filterType === 'HARIAN') {
-      return j.date === selectedDay;
+      const targetDay = (selectedDay || '').split('T')[0].trim();
+      return cleanDate === targetDay;
     } else if (filterType === 'BULANAN') {
-      const [year, month] = j.date.split('-');
-      return parseInt(year) === selectedYear && parseInt(month) === selectedMonth;
+      const parts = cleanDate.split('-');
+      if (parts.length < 2) return false;
+      return parseInt(parts[0], 10) === selectedYear && parseInt(parts[1], 10) === selectedMonth;
     } else if (filterType === 'TAHUNAN') {
-      const [year] = j.date.split('-');
-      return parseInt(year) === selectedYear;
+      const parts = cleanDate.split('-');
+      if (parts.length < 1) return false;
+      return parseInt(parts[0], 10) === selectedYear;
     }
     return true;
   });
 
   const getPeriodeLabel = () => {
     if (filterType === 'HARIAN') {
-      return new Date(selectedDay).toLocaleDateString('id-ID', {
+      const parts = (selectedDay || '').split('T')[0].trim().split('-').map(Number);
+      const dObj = parts.length === 3 ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date(selectedDay);
+      return dObj.toLocaleDateString('id-ID', {
         day: 'numeric',
         month: 'long',
         year: 'numeric',
@@ -537,8 +545,6 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
       return `Tahun ${selectedYear}`;
     }
   };
-
-  const selectedClassName = classes.find((c) => c.id === selectedClassId)?.name;
 
   return (
     <div className="space-y-6">
@@ -635,16 +641,16 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
                   onChange={(e) => setDocType(e.target.value as DokumenCetakType)}
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-xl font-bold text-blue-900 bg-blue-50/50"
                 >
-                  <option value="DAFTAR_HADIR_GURU">Daftar Hadir Guru Bidang Studi (Per-Kelas)</option>
+                  <option value="DAFTAR_HADIR_GURU">Daftar Hadir Terpadu Per-Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
+                  <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
                   {school.jenjang === 'SD' && (
                     <>
-                      <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Guru Bantu (Per-Kelas)</option>
-                      <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Guru Diniyah (Per-Kelas)</option>
+                      <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Khusus Guru Bantu (Per-Kelas)</option>
+                      <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Khusus Guru Diniyah (Per-Kelas)</option>
                     </>
                   )}
-                  <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler (Hanya Persekolah)</option>
+                  <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler P5 (Hanya Persekolah)</option>
                   <option value="DAFTAR_HADIR_EKSTRAKURIKULER">Daftar Hadir Ekstrakurikuler (Hanya Persekolah)</option>
-                  <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Per-Kelas)</option>
                 </select>
               </div>
 

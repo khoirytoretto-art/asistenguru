@@ -131,14 +131,35 @@ function setItem<T>(key: string, value: T): void {
   }
 }
 
-// Multi-tab synchronization support
+// Multi-tab synchronization support (storage event + BroadcastChannel bus)
+const syncChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window 
+  ? new BroadcastChannel('asistenguru_sync_bus') 
+  : null;
+
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key && memoryCache[e.key] !== undefined) {
       delete memoryCache[e.key];
     }
-    StorageService.notifyListeners();
+    StorageService.notifyListeners(false);
   });
+
+  if (syncChannel) {
+    syncChannel.onmessage = (event) => {
+      if (event.data?.type === 'SYNC_DATA') {
+        Object.keys(memoryCache).forEach((k) => delete memoryCache[k]);
+        StorageService.notifyListeners(false);
+      }
+    };
+  }
+}
+
+function broadcastSync() {
+  if (syncChannel) {
+    try {
+      syncChannel.postMessage({ type: 'SYNC_DATA', timestamp: Date.now() });
+    } catch {}
+  }
 }
 
 const listeners = new Set<() => void>();
@@ -153,7 +174,7 @@ export const StorageService = {
     return () => listeners.delete(fn);
   },
 
-  notifyListeners() {
+  notifyListeners(broadcast = true) {
     listeners.forEach((fn) => {
       try {
         fn();
@@ -161,6 +182,9 @@ export const StorageService = {
         console.error('Listener callback error:', err);
       }
     });
+    if (broadcast) {
+      broadcastSync();
+    }
   },
 
   getDeletedIds(): string[] {
@@ -191,6 +215,134 @@ export const StorageService = {
       }
     });
     return Array.from(map.values());
+  },
+
+  // Deduplikasi ketat data Presensi agar tidak rancau antar perangkat & mempertahankan guru dengan peran ganda
+  mergeAttendances(localList: TeacherAttendanceEntry[] = [], serverList: TeacherAttendanceEntry[] = [], deletedSet?: Set<string>): TeacherAttendanceEntry[] {
+    const delSet = deletedSet || new Set(this.getDeletedIds());
+    const map = new Map<string, TeacherAttendanceEntry>();
+    const all = [...(serverList || []), ...(localList || [])];
+    all.forEach((item) => {
+      if (!item || !item.id || delSet.has(item.id)) return;
+      const role = item.roleUsed || 'GURU_BIDANG_STUDI';
+      const isPerSchool = role === 'KOORDINATOR_KOKURIKULER' || role === 'PEMBINA_EKSTRAKURIKULER';
+      const normDate = (item.date || '').split('T')[0].trim();
+      const classKey = isPerSchool ? 'PERSEKOLAH' : (item.classId || 'ALL');
+      // timeKey membedakan sesi jika guru memiliki jam masuk/keluar terpisah di kelas yang sama
+      const timeKey = (item.jamMasuk && item.jamKeluar) ? `${item.jamMasuk}-${item.jamKeluar}` : (item.id || '');
+      // Kunci unik menyertakan role agar Guru Studi, Guru Bantu, dan Guru Diniyah TIDAK saling menimpa!
+      const logicalKey = `${item.schoolId || 'SCH'}_${item.teacherId || item.teacherName}_${normDate}_${role}_${classKey}_${timeKey}`;
+      const prev = map.get(logicalKey);
+      if (!prev) {
+        map.set(logicalKey, item);
+      } else {
+        const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
+        const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+        if (currTime >= prevTime) {
+          map.set(logicalKey, { ...prev, ...item });
+        }
+      }
+    });
+    return Array.from(map.values());
+  },
+
+  // Deduplikasi ketat data Jurnal Pembelajaran: mempertahankan sesi KBM, Pendampingan, dan Diniyah
+  mergeJournals(localList: ClassJournalEntry[] = [], serverList: ClassJournalEntry[] = [], deletedSet?: Set<string>): ClassJournalEntry[] {
+    const delSet = deletedSet || new Set(this.getDeletedIds());
+    const map = new Map<string, ClassJournalEntry>();
+    const all = [...(serverList || []), ...(localList || [])];
+    all.forEach((item) => {
+      if (!item || !item.id || delSet.has(item.id)) return;
+      const normDate = (item.date || '').split('T')[0].trim();
+      const jamKe = item.jamKe || 0;
+      const teacherKey = item.teacherId || item.teacherName || 'GURU';
+      const classKey = item.classId || 'ALL';
+      const roleKey = item.teacherRole || 'GURU_BIDANG_STUDI';
+      const subjectKey = item.subjectId || item.subjectName || 'MAPEL';
+      const logicalKey = `${item.schoolId || 'SCH'}_${classKey}_${normDate}_${jamKe}_${teacherKey}_${roleKey}_${subjectKey}`;
+      const prev = map.get(logicalKey);
+      if (!prev) {
+        map.set(logicalKey, item);
+      } else {
+        const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
+        const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+        if (currTime >= prevTime) {
+          map.set(logicalKey, { ...prev, ...item });
+        }
+      }
+    });
+    return Array.from(map.values());
+  },
+
+  // Deduplikasi penugasan: satu guru hanya memiliki satu profil penugasan aktif per sekolah
+  mergeAssignments(localList: TeacherAssignment[] = [], serverList: TeacherAssignment[] = [], deletedSet?: Set<string>): TeacherAssignment[] {
+    const delSet = deletedSet || new Set(this.getDeletedIds());
+    const map = new Map<string, TeacherAssignment>();
+    const all = [...(serverList || []), ...(localList || [])];
+    all.forEach((item) => {
+      if (!item || !item.id || delSet.has(item.id)) return;
+      const logicalKey = `${item.schoolId}_${item.teacherId}`;
+      const prev = map.get(logicalKey);
+      if (!prev) {
+        map.set(logicalKey, item);
+      } else {
+        const mergedRoles = Array.from(new Set([...(prev.roles || []), ...(item.roles || [])]));
+        const mergedClassIds = Array.from(new Set([...(prev.assignedClassIds || []), ...(item.assignedClassIds || [])]));
+        map.set(logicalKey, {
+          ...prev,
+          ...item,
+          roles: mergedRoles,
+          assignedClassIds: mergedClassIds,
+        });
+      }
+    });
+    return Array.from(map.values());
+  },
+
+  // Pembersihan otomatis data rancau saat awal inisialisasi aplikasi (Normalisasi & Sanitasi)
+  sanitizeAndDeduplicateAll() {
+    const delSet = new Set(this.getDeletedIds());
+    // 1. Sanitasi Attendances: bersihkan spasi, pastikan roleUsed terisi, tanggal standar YYYY-MM-DD
+    const rawAtts = this.getAttendances();
+    const sanitizedAtts = rawAtts.map((a) => {
+      const cleanDate = (a.date || '').split('T')[0].trim();
+      return {
+        ...a,
+        date: cleanDate,
+        roleUsed: a.roleUsed || 'GURU_BIDANG_STUDI',
+        teacherName: (a.teacherName || '').trim(),
+      };
+    });
+    const atts = this.mergeAttendances(sanitizedAtts, [], delSet);
+    setItem(STORAGE_KEYS.ATTENDANCES, atts);
+
+    // 2. Sanitasi Journals: bersihkan spasi, tanggal standar, pastikan teacherRole terdeteksi
+    const rawJrns = this.getJournals();
+    const sanitizedJrns = rawJrns.map((j) => {
+      const cleanDate = (j.date || '').split('T')[0].trim();
+      let role = j.teacherRole;
+      if (!role) {
+        if (j.subjectName?.toLowerCase().includes('bantu') || j.materi?.toLowerCase().includes('pendampingan')) {
+          role = 'GURU_BANTU';
+        } else if (j.subjectName?.toLowerCase().includes('diniyah') || j.materi?.toLowerCase().includes('tahsin') || j.materi?.toLowerCase().includes('tahfidz')) {
+          role = 'GURU_DINIYAH';
+        } else {
+          role = 'GURU_BIDANG_STUDI';
+        }
+      }
+      return {
+        ...j,
+        date: cleanDate,
+        teacherRole: role,
+        teacherName: (j.teacherName || '').trim(),
+      };
+    });
+    const jrns = this.mergeJournals(sanitizedJrns, [], delSet);
+    setItem(STORAGE_KEYS.JOURNALS, jrns);
+
+    // 3. Sanitasi Assignments
+    const asgs = this.mergeAssignments(this.getAssignments(), [], delSet);
+    setItem(STORAGE_KEYS.ASSIGNMENTS, asgs);
   },
 
   // Central Server API synchronization (Upload perubahan dengan batching & debouncing)
@@ -350,7 +502,7 @@ export const StorageService = {
             // 5. Assignments
             if (Array.isArray(data.assignments)) {
               const cur = this.getAssignments();
-              const merged = this.mergeById(cur, data.assignments, delSet);
+              const merged = this.mergeAssignments(cur, data.assignments, delSet);
               if (merged.length !== cur.length || JSON.stringify(cur) !== JSON.stringify(merged)) {
                 setItem(STORAGE_KEYS.ASSIGNMENTS, merged);
                 hasChanged = true;
@@ -380,7 +532,7 @@ export const StorageService = {
             // 8. Journals
             if (Array.isArray(data.journals)) {
               const cur = this.getJournals();
-              const merged = this.mergeById(cur, data.journals, delSet);
+              const merged = this.mergeJournals(cur, data.journals, delSet);
               if (merged.length !== cur.length || JSON.stringify(cur) !== JSON.stringify(merged)) {
                 setItem(STORAGE_KEYS.JOURNALS, merged);
                 hasChanged = true;
@@ -390,7 +542,7 @@ export const StorageService = {
             // 9. Attendances
             if (Array.isArray(data.attendances)) {
               const cur = this.getAttendances();
-              const merged = this.mergeById(cur, data.attendances, delSet);
+              const merged = this.mergeAttendances(cur, data.attendances, delSet);
               if (merged.length !== cur.length || JSON.stringify(cur) !== JSON.stringify(merged)) {
                 setItem(STORAGE_KEYS.ATTENDANCES, merged);
                 hasChanged = true;
@@ -442,8 +594,9 @@ export const StorageService = {
     return inFlightSyncPromise;
   },
 
-  // Initial loader from server with integrity checks
+  // Initial loader from server with integrity checks and anti-rancau sanitization
   async init(): Promise<void> {
+    this.sanitizeAndDeduplicateAll();
     await this.syncFromServer(true);
   },
 
@@ -893,7 +1046,10 @@ export const StorageService = {
     let list = getItem(STORAGE_KEYS.JOURNALS, DEFAULT_JOURNALS);
     if (filters?.schoolId) list = list.filter((j) => j.schoolId === filters.schoolId);
     if (filters?.classId) list = list.filter((j) => j.classId === filters.classId);
-    if (filters?.date) list = list.filter((j) => j.date === filters.date);
+    if (filters?.date) {
+      const targetNorm = (filters.date || '').split('T')[0].trim();
+      list = list.filter((j) => (j.date || '').split('T')[0].trim() === targetNorm);
+    }
     if (filters?.teacherId) list = list.filter((j) => j.teacherId === filters.teacherId);
     return list;
   },
@@ -905,14 +1061,10 @@ export const StorageService = {
   },
 
   addJournal(journal: ClassJournalEntry) {
-    const journals = getItem(STORAGE_KEYS.JOURNALS, DEFAULT_JOURNALS);
-    const existingIdx = journals.findIndex((j) => j.id === journal.id);
-    if (existingIdx >= 0) {
-      journals[existingIdx] = journal;
-    } else {
-      journals.unshift(journal);
-    }
-    this.saveJournals(journals);
+    const cur = this.getJournals();
+    const merged = this.mergeJournals(cur, [journal]);
+    this.saveJournals(merged);
+    this.syncToServer(true);
 
     // Kirim langsung ke endpoint server khusus jurnal agar langsung masuk ke database pusat
     fetch('/api/journals', {
@@ -927,6 +1079,7 @@ export const StorageService = {
     const journals = getItem(STORAGE_KEYS.JOURNALS, DEFAULT_JOURNALS).filter((j) => j.id !== id);
     fetch(`/api/journals/${id}`, { method: 'DELETE' }).catch(() => {});
     this.saveJournals(journals);
+    this.syncToServer(true);
   },
 
   // Attendances (PER-KELAS UNTUK KBM/GURU, PER-SEKOLAH UNTUK KOKURIKULER & EKSKUL)
@@ -940,7 +1093,10 @@ export const StorageService = {
     let list = getItem(STORAGE_KEYS.ATTENDANCES, DEFAULT_ATTENDANCES);
     if (filters?.schoolId) list = list.filter((a) => a.schoolId === filters.schoolId);
     if (filters?.classId) list = list.filter((a) => a.classId === filters.classId);
-    if (filters?.date) list = list.filter((a) => a.date === filters.date);
+    if (filters?.date) {
+      const targetNorm = (filters.date || '').split('T')[0].trim();
+      list = list.filter((a) => (a.date || '').split('T')[0].trim() === targetNorm);
+    }
     if (filters?.teacherId) list = list.filter((a) => a.teacherId === filters.teacherId);
     if (filters?.roleUsed) list = list.filter((a) => a.roleUsed === filters.roleUsed);
     return list;
@@ -953,31 +1109,10 @@ export const StorageService = {
   },
 
   addAttendance(attendance: TeacherAttendanceEntry) {
-    const list = getItem(STORAGE_KEYS.ATTENDANCES, DEFAULT_ATTENDANCES);
-    // Unique match: includes classId for per-class attendance, or matches role and activity
-    const isPerSchool = 
-      attendance.roleUsed === 'KOORDINATOR_KOKURIKULER' || 
-      attendance.roleUsed === 'PEMBINA_EKSTRAKURIKULER';
-
-    const existingIdx = list.findIndex((a) => {
-      if (a.id === attendance.id) return true;
-      const matchBasic = 
-        a.schoolId === attendance.schoolId &&
-        (a.teacherId === attendance.teacherId || a.teacherName === attendance.teacherName) &&
-        a.date === attendance.date &&
-        a.roleUsed === attendance.roleUsed;
-      
-      if (!matchBasic) return false;
-      if (isPerSchool) return true; // Kokurikuler and Ekstrakurikuler match per school & date
-      return a.classId === attendance.classId; // KBM must match same class
-    });
-
-    if (existingIdx >= 0) {
-      list[existingIdx] = attendance;
-    } else {
-      list.unshift(attendance);
-    }
-    this.saveAttendances(list);
+    const cur = this.getAttendances();
+    const merged = this.mergeAttendances(cur, [attendance]);
+    this.saveAttendances(merged);
+    this.syncToServer(true);
 
     // Kirim langsung ke endpoint server khusus presensi agar langsung masuk ke database pusat
     fetch('/api/attendances', {
@@ -992,6 +1127,7 @@ export const StorageService = {
     const list = getItem(STORAGE_KEYS.ATTENDANCES, DEFAULT_ATTENDANCES).filter((a) => a.id !== id);
     fetch(`/api/attendances/${id}`, { method: 'DELETE' }).catch(() => {});
     this.saveAttendances(list);
+    this.syncToServer(true);
   },
 
   // Password Reset Requests
