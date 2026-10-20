@@ -167,6 +167,34 @@ let lastSyncedRevision: string | number = 0;
 let inFlightSyncPromise: Promise<boolean> | null = null;
 let serverPushTimeout: any = null;
 
+// Helper normalisasi tanggal super akurat untuk mencegah ketidaksinkronan format kalender
+export function normalizeDateString(dateStr?: string): { year: number; month: number; day: number; formatted: string } | null {
+  if (!dateStr) return null;
+  const clean = dateStr.split('T')[0].trim().replace(/\//g, '-');
+  const rawParts = clean.split('-').map((p) => parseInt(p.trim(), 10));
+  if (rawParts.length !== 3 || rawParts.some(isNaN)) return null;
+
+  let y: number, m: number, d: number;
+  if (rawParts[0] > 1000) {
+    // Format YYYY-MM-DD
+    y = rawParts[0];
+    m = rawParts[1];
+    d = rawParts[2];
+  } else if (rawParts[2] > 1000) {
+    // Format DD-MM-YYYY
+    d = rawParts[0];
+    m = rawParts[1];
+    y = rawParts[2];
+  } else {
+    y = rawParts[0];
+    m = rawParts[1];
+    d = rawParts[2];
+  }
+
+  const formatted = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return { year: y, month: m, day: d, formatted };
+}
+
 export const StorageService = {
   // Subscription listener for real-time reactivity
   subscribe(fn: () => void): () => void {
@@ -226,7 +254,8 @@ export const StorageService = {
       if (!item || !item.id || delSet.has(item.id)) return;
       const role = item.roleUsed || 'GURU_BIDANG_STUDI';
       const isPerSchool = role === 'KOORDINATOR_KOKURIKULER' || role === 'PEMBINA_EKSTRAKURIKULER';
-      const normDate = (item.date || '').split('T')[0].trim();
+      const dateInfo = normalizeDateString(item.date);
+      const normDate = dateInfo ? dateInfo.formatted : (item.date || '').split('T')[0].trim();
       const classKey = isPerSchool ? 'PERSEKOLAH' : (item.classId || 'ALL');
       // timeKey membedakan sesi jika guru memiliki jam masuk/keluar terpisah di kelas yang sama
       const timeKey = (item.jamMasuk && item.jamKeluar) ? `${item.jamMasuk}-${item.jamKeluar}` : (item.id || '');
@@ -234,26 +263,27 @@ export const StorageService = {
       const logicalKey = `${item.schoolId || 'SCH'}_${item.teacherId || item.teacherName}_${normDate}_${role}_${classKey}_${timeKey}`;
       const prev = map.get(logicalKey);
       if (!prev) {
-        map.set(logicalKey, item);
+        map.set(logicalKey, { ...item, date: normDate });
       } else {
         const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
         const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
         if (currTime >= prevTime) {
-          map.set(logicalKey, { ...prev, ...item });
+          map.set(logicalKey, { ...prev, ...item, date: normDate });
         }
       }
     });
     return Array.from(map.values());
   },
 
-  // Deduplikasi ketat data Jurnal Pembelajaran: mempertahankan sesi KBM, Pendampingan, dan Diniyah
+  // Deduplikasi ketat data Jurnal Pembelajaran: mempertahankan sesi KBM Guru Bidang Studi per kelas
   mergeJournals(localList: ClassJournalEntry[] = [], serverList: ClassJournalEntry[] = [], deletedSet?: Set<string>): ClassJournalEntry[] {
     const delSet = deletedSet || new Set(this.getDeletedIds());
     const map = new Map<string, ClassJournalEntry>();
     const all = [...(serverList || []), ...(localList || [])];
     all.forEach((item) => {
       if (!item || !item.id || delSet.has(item.id)) return;
-      const normDate = (item.date || '').split('T')[0].trim();
+      const dateInfo = normalizeDateString(item.date);
+      const normDate = dateInfo ? dateInfo.formatted : (item.date || '').split('T')[0].trim();
       const jamKe = item.jamKe || 0;
       const teacherKey = item.teacherId || item.teacherName || 'GURU';
       const classKey = item.classId || 'ALL';
@@ -262,12 +292,12 @@ export const StorageService = {
       const logicalKey = `${item.schoolId || 'SCH'}_${classKey}_${normDate}_${jamKe}_${teacherKey}_${roleKey}_${subjectKey}`;
       const prev = map.get(logicalKey);
       if (!prev) {
-        map.set(logicalKey, item);
+        map.set(logicalKey, { ...item, date: normDate });
       } else {
         const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
         const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
         if (currTime >= prevTime) {
-          map.set(logicalKey, { ...prev, ...item });
+          map.set(logicalKey, { ...prev, ...item, date: normDate });
         }
       }
     });
@@ -305,7 +335,8 @@ export const StorageService = {
     // 1. Sanitasi Attendances: bersihkan spasi, pastikan roleUsed terisi, tanggal standar YYYY-MM-DD
     const rawAtts = this.getAttendances();
     const sanitizedAtts = rawAtts.map((a) => {
-      const cleanDate = (a.date || '').split('T')[0].trim();
+      const dateInfo = normalizeDateString(a.date);
+      const cleanDate = dateInfo ? dateInfo.formatted : (a.date || '').split('T')[0].trim();
       return {
         ...a,
         date: cleanDate,
@@ -319,7 +350,8 @@ export const StorageService = {
     // 2. Sanitasi Journals: bersihkan spasi, tanggal standar, pastikan teacherRole terdeteksi
     const rawJrns = this.getJournals();
     const sanitizedJrns = rawJrns.map((j) => {
-      const cleanDate = (j.date || '').split('T')[0].trim();
+      const dateInfo = normalizeDateString(j.date);
+      const cleanDate = dateInfo ? dateInfo.formatted : (j.date || '').split('T')[0].trim();
       let role = j.teacherRole;
       if (!role) {
         if (j.subjectName?.toLowerCase().includes('bantu') || j.materi?.toLowerCase().includes('pendampingan')) {

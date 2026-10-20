@@ -7,7 +7,29 @@ import { createServer as createViteServer } from 'vite';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT || 3000;
+function getPort(): number {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const val = parseInt(process.argv[portArgIndex + 1], 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  if (process.env.PORT) {
+    const val = parseInt(process.env.PORT, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return 3000;
+}
+
+function getHost(): string {
+  const hostArgIndex = process.argv.indexOf('--host');
+  if (hostArgIndex !== -1 && process.argv[hostArgIndex + 1] && !process.argv[hostArgIndex + 1].startsWith('-')) {
+    return process.argv[hostArgIndex + 1];
+  }
+  return process.env.HOST || '0.0.0.0';
+}
+
+const PORT = getPort();
+const HOST = getHost();
 const DATA_DIR = path.resolve(__dirname, 'data');
 const DATA_FILE = path.resolve(DATA_DIR, 'app-data.json');
 
@@ -244,6 +266,31 @@ function mergeUsers(existingList: any[] = [], incomingList: any[] = [], deletedS
   return Array.from(map.values());
 }
 
+function normalizeDateString(dateStr?: string): { year: number; month: number; day: number; formatted: string } | null {
+  if (!dateStr) return null;
+  const clean = dateStr.split('T')[0].trim().replace(/\//g, '-');
+  const rawParts = clean.split('-').map((p) => parseInt(p.trim(), 10));
+  if (rawParts.length !== 3 || rawParts.some(isNaN)) return null;
+
+  let y: number, m: number, d: number;
+  if (rawParts[0] > 1000) {
+    y = rawParts[0];
+    m = rawParts[1];
+    d = rawParts[2];
+  } else if (rawParts[2] > 1000) {
+    d = rawParts[0];
+    m = rawParts[1];
+    y = rawParts[2];
+  } else {
+    y = rawParts[0];
+    m = rawParts[1];
+    d = rawParts[2];
+  }
+
+  const formatted = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return { year: y, month: m, day: d, formatted };
+}
+
 // Smart merger khusus data Attendances: deduplikasi ketat berdasarkan tanggal + guru + peran (Studi/Bantu/Diniyah) + kelas/sekolah + waktu
 function mergeAttendances(existingList: any[] = [], incomingList: any[] = [], deletedSet?: Set<string>): any[] {
   const map = new Map<string, any>();
@@ -252,7 +299,8 @@ function mergeAttendances(existingList: any[] = [], incomingList: any[] = [], de
     if (!item || !item.id || PURGED_DUMMY_IDS.has(item.id) || (deletedSet && deletedSet.has(item.id))) return;
     const role = item.roleUsed || 'GURU_BIDANG_STUDI';
     const isPerSchool = role === 'KOORDINATOR_KOKURIKULER' || role === 'PEMBINA_EKSTRAKURIKULER';
-    const normDate = (item.date || '').split('T')[0].trim();
+    const dateInfo = normalizeDateString(item.date);
+    const normDate = dateInfo ? dateInfo.formatted : (item.date || '').split('T')[0].trim();
     const classKey = isPerSchool ? 'PERSEKOLAH' : (item.classId || 'ALL');
     // timeKey membedakan sesi jika guru memiliki jam masuk/keluar terpisah di kelas yang sama
     const timeKey = (item.jamMasuk && item.jamKeluar) ? `${item.jamMasuk}-${item.jamKeluar}` : (item.id || '');
@@ -260,25 +308,26 @@ function mergeAttendances(existingList: any[] = [], incomingList: any[] = [], de
     const logicalKey = `${item.schoolId || 'SCH'}_${item.teacherId || item.teacherName}_${normDate}_${role}_${classKey}_${timeKey}`;
     const prev = map.get(logicalKey);
     if (!prev) {
-      map.set(logicalKey, item);
+      map.set(logicalKey, { ...item, date: normDate });
     } else {
       const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
       const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
       if (currTime >= prevTime) {
-        map.set(logicalKey, { ...prev, ...item });
+        map.set(logicalKey, { ...prev, ...item, date: normDate });
       }
     }
   });
   return Array.from(map.values());
 }
 
-// Smart merger khusus data Jurnal Pembelajaran: deduplikasi sesi KBM/Pendampingan/Diniyah per kelas, tanggal, jam ke, guru, dan peran
+// Smart merger khusus data Jurnal Pembelajaran: deduplikasi sesi KBM Guru Bidang Studi per kelas
 function mergeJournals(existingList: any[] = [], incomingList: any[] = [], deletedSet?: Set<string>): any[] {
   const map = new Map<string, any>();
   const all = [...(existingList || []), ...(incomingList || [])];
   all.forEach((item) => {
     if (!item || !item.id || PURGED_DUMMY_IDS.has(item.id) || (deletedSet && deletedSet.has(item.id))) return;
-    const normDate = (item.date || '').split('T')[0].trim();
+    const dateInfo = normalizeDateString(item.date);
+    const normDate = dateInfo ? dateInfo.formatted : (item.date || '').split('T')[0].trim();
     const jamKe = item.jamKe || 0;
     const teacherKey = item.teacherId || item.teacherName || 'GURU';
     const classKey = item.classId || 'ALL';
@@ -287,12 +336,12 @@ function mergeJournals(existingList: any[] = [], incomingList: any[] = [], delet
     const logicalKey = `${item.schoolId || 'SCH'}_${classKey}_${normDate}_${jamKe}_${teacherKey}_${roleKey}_${subjectKey}`;
     const prev = map.get(logicalKey);
     if (!prev) {
-      map.set(logicalKey, item);
+      map.set(logicalKey, { ...item, date: normDate });
     } else {
       const prevTime = prev.createdAt ? new Date(prev.createdAt).getTime() : 0;
       const currTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
       if (currTime >= prevTime) {
-        map.set(logicalKey, { ...prev, ...item });
+        map.set(logicalKey, { ...prev, ...item, date: normDate });
       }
     }
   });
@@ -673,8 +722,12 @@ async function startServer() {
     });
   }
 
-  app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`[AsistenGuru Server] Server berjalan di http://0.0.0.0:${PORT}`);
+  const server = app.listen(Number(PORT), HOST, () => {
+    console.log(`[AsistenGuru Server] Server berjalan di http://${HOST}:${PORT}`);
+  });
+
+  server.on('error', (err: any) => {
+    console.error('[AsistenGuru Server] Server runtime error:', err);
   });
 }
 

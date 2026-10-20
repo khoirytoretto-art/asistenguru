@@ -12,7 +12,7 @@ import {
   PaperSize,
   DokumenCetakType,
 } from '../../types';
-import { StorageService } from '../../utils/storage';
+import { StorageService, normalizeDateString } from '../../utils/storage';
 import { PrintableJournalSheet } from '../print/PrintableJournalSheet';
 import { PrintableAttendanceSheet } from '../print/PrintableAttendanceSheet';
 import { exportToPdfClient, printDocumentUniversal } from '../../utils/pdfGenerator';
@@ -657,17 +657,21 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
     cetakDocType === 'DAFTAR_HADIR_KOKURIKULER' ||
     cetakDocType === 'DAFTAR_HADIR_EKSTRAKURIKULER';
 
-  const cetakTargetClass = schoolClasses.find((c) => c.id === cetakClassId);
+  const effectiveCetakClassId = cetakClassId || (schoolClasses.length > 0 ? schoolClasses[0].id : '');
+  const cetakTargetClass = schoolClasses.find((c) => c.id === effectiveCetakClassId);
   const cetakClassName = cetakTargetClass ? cetakTargetClass.name : undefined;
 
   const filteredCetakJournals = myJournals.filter((j) => {
-    if (cetakClassId && j.classId !== cetakClassId && j.classId !== cetakClassName) return false;
-    const cleanDate = (j.date || '').split('T')[0].trim();
-    const parts = cleanDate.split('-');
-    if (parts.length === 3) {
-      const yr = parseInt(parts[0], 10);
-      const mo = parseInt(parts[1], 10);
-      if (yr !== cetakYear || mo !== cetakMonth) return false;
+    if (!effectiveCetakClassId) return false;
+    const matchClass =
+      j.classId === effectiveCetakClassId ||
+      j.classId === cetakClassName ||
+      (cetakClassName && j.classId && j.classId.toLowerCase() === cetakClassName.toLowerCase());
+    if (!matchClass) return false;
+    if (j.teacherRole && j.teacherRole !== 'GURU_BIDANG_STUDI') return false;
+    const dateInfo = normalizeDateString(j.date);
+    if (dateInfo) {
+      if (dateInfo.year !== cetakYear || dateInfo.month !== cetakMonth) return false;
     }
     return true;
   });
@@ -1031,8 +1035,8 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
               </span>
             </button>
 
-            {/* TAB 2: JURNAL PEMBELAJARAN (UNTUK GURU BIDANG STUDI, GURU BANTU, & GURU DINIYAH) */}
-            {(selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH') && (
+            {/* TAB 2: JURNAL PEMBELAJARAN (HANYA KHUSUS GURU BIDANG STUDI) */}
+            {selectedRole === 'GURU_BIDANG_STUDI' && (
               <button
                 type="button"
                 onClick={() => setActiveDutyTab('JURNAL')}
@@ -1043,15 +1047,11 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                 }`}
               >
                 <BookOpen className="w-4 h-4 shrink-0" />
-                <span className="truncate">
-                  {selectedRole === 'GURU_BIDANG_STUDI' && '2. Isi Jurnal KBM'}
-                  {selectedRole === 'GURU_BANTU' && '2. Isi Jurnal Pendampingan'}
-                  {selectedRole === 'GURU_DINIYAH' && '2. Isi Jurnal Diniyah'}
-                </span>
+                <span className="truncate">2. Isi Jurnal KBM</span>
               </button>
             )}
 
-            {/* TAB 3: RIWAYAT & CETAK DOKUMEN REKAP */}
+            {/* TAB TERAKHIR: RIWAYAT & CETAK DOKUMEN REKAP */}
             <button
               type="button"
               onClick={() => setActiveDutyTab('RIWAYAT_CETAK')}
@@ -1063,9 +1063,7 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
             >
               <Printer className="w-4 h-4 shrink-0" />
               <span className="truncate">
-                {(selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH')
-                  ? '3. Riwayat & Cetak'
-                  : '2. Riwayat & Cetak'}
+                {selectedRole === 'GURU_BIDANG_STUDI' ? '3. Riwayat & Cetak' : '2. Riwayat & Cetak'}
               </span>
             </button>
           </div>
@@ -1511,34 +1509,22 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
           )}
 
           {/* ----------------------------------------------------------------- */}
-          {/* KONTEN SUB-TAB 2: FORM ISI JURNAL (GURU STUDI, BANTU, & DINIYAH)  */}
+          {/* KONTEN SUB-TAB 2: FORM ISI JURNAL (HANYA GURU BIDANG STUDI)       */}
           {/* ----------------------------------------------------------------- */}
-          {activeDutyTab === 'JURNAL' && (selectedRole === 'GURU_BIDANG_STUDI' || selectedRole === 'GURU_BANTU' || selectedRole === 'GURU_DINIYAH') && (
+          {activeDutyTab === 'JURNAL' && selectedRole === 'GURU_BIDANG_STUDI' && (
             <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-7 shadow-xs space-y-5">
               <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
                 <div>
                   <h3 className="text-base sm:text-xl font-black text-slate-900 flex items-center gap-2">
                     <BookOpen className="w-5 h-5 text-emerald-600" />
-                    <span>
-                      {selectedRole === 'GURU_BIDANG_STUDI' && 'Form Jurnal Pembelajaran KBM (Dibuat Per-Kelas)'}
-                      {selectedRole === 'GURU_BANTU' && 'Form Jurnal Pendampingan Guru Bantu (Dibuat Per-Kelas)'}
-                      {selectedRole === 'GURU_DINIYAH' && 'Form Jurnal Bimbingan Diniyah (Dibuat Per-Kelas)'}
-                    </span>
+                    <span>Form Jurnal Pembelajaran KBM (Dibuat Per-Kelas)</span>
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                    {selectedRole === 'GURU_BIDANG_STUDI' && 'Pencatatan materi kompetensi dasar pembelajaran kelas reguler per-kelas.'}
-                    {selectedRole === 'GURU_BANTU' && 'Pencatatan materi bimbingan asistensi belajar / inklusi siswa per-kelas.'}
-                    {selectedRole === 'GURU_DINIYAH' && 'Pencatatan materi tahsin, tahfidz, fikih ibadah & bimbingan diniyah per-kelas.'}
+                    Pencatatan materi kompetensi dasar pembelajaran kelas reguler per-kelas.
                   </p>
                 </div>
-                <span className={`text-xs px-3 py-1 rounded-full font-bold border shrink-0 ${
-                  selectedRole === 'GURU_BANTU'
-                    ? 'bg-purple-100 text-purple-900 border-purple-200'
-                    : selectedRole === 'GURU_DINIYAH'
-                    ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
-                    : 'bg-blue-100 text-blue-900 border-blue-200'
-                }`}>
-                  {getRoleLabel(selectedRole)}
+                <span className="text-xs px-3 py-1 rounded-full font-bold border shrink-0 bg-blue-100 text-blue-900 border-blue-200">
+                  Guru Bidang Studi
                 </span>
               </div>
 
@@ -1645,75 +1631,19 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                       </>
                     )}
 
-                    {selectedRole === 'GURU_BANTU' && (
-                      <>
-                        <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
-                          Fokus / Bidang Pendampingan Belajar:
-                        </label>
-                        <select
-                          value={bantuSubjectCustom}
-                          onChange={(e) => setBantuSubjectCustom(e.target.value)}
-                          className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-bold text-base text-purple-950 bg-white min-h-[48px]"
-                        >
-                          <option value="Pendampingan Belajar Siswa (KBM)">Pendampingan Belajar Siswa (KBM)</option>
-                          <option value="Pendampingan Belajar Inklusi / ABK">Pendampingan Belajar Inklusi / ABK</option>
-                          <option value="Bimbingan Remedial &amp; Pengayaan">Bimbingan Remedial &amp; Pengayaan</option>
-                          <option value="Asistensi Guru Kelas &amp; Literasi">Asistensi Guru Kelas &amp; Literasi</option>
-                          <option value="Pendampingan Numerasi Dasar">Pendampingan Numerasi Dasar</option>
-                          {schoolSubjects.map((s) => (
-                            <option key={s.id} value={`Pendampingan ${s.name}`}>
-                              Pendampingan Mapel {s.name}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-
-                    {selectedRole === 'GURU_DINIYAH' && (
-                      <>
-                        <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
-                          Bidang / Materi Diniyah:
-                        </label>
-                        <select
-                          value={diniyahMateriCustom}
-                          onChange={(e) => setDiniyahMateriCustom(e.target.value)}
-                          className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-bold text-base text-emerald-950 bg-white min-h-[48px]"
-                        >
-                          <option value="Tahsin &amp; Tilawah Al-Qur'an">Tahsin &amp; Tilawah Al-Qur'an</option>
-                          <option value="Tahfidz Juz 'Amma / Al-Qur'an">Tahfidz Juz 'Amma / Al-Qur'an</option>
-                          <option value="Fiqih &amp; Praktik Ibadah Sholat">Fiqih &amp; Praktik Ibadah Sholat</option>
-                          <option value="Bimbingan Doa &amp; Hadits Harian">Bimbingan Doa &amp; Hadits Harian</option>
-                          <option value="Bahasa Arab &amp; BTA">Bahasa Arab &amp; BTA</option>
-                          <option value="Aqidah Akhlak &amp; Karakter">Aqidah Akhlak &amp; Karakter</option>
-                          {schoolSubjects.map((s) => (
-                            <option key={s.id} value={s.name}>
-                              {s.name}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
                   </div>
                 </div>
 
                 <div>
                   <label className="block font-bold text-slate-700 text-sm sm:text-base mb-1.5">
-                    {selectedRole === 'GURU_BANTU' && 'Materi / Rincian Kegiatan Pendampingan Siswa *'}
-                    {selectedRole === 'GURU_DINIYAH' && 'Materi / Ayat / Capaian Bimbingan Diniyah *'}
-                    {selectedRole === 'GURU_BIDANG_STUDI' && 'Materi / Kompetensi yang Diajarkan *'}
+                    Materi / Kompetensi yang Diajarkan *
                   </label>
                   <textarea
                     required
                     rows={3}
                     value={journalMateri}
                     onChange={(e) => setJournalMateri(e.target.value)}
-                    placeholder={
-                      selectedRole === 'GURU_BANTU'
-                        ? 'Contoh: Mendampingi 4 siswa yang belum memahami materi pecahan, membimbing latihan soal mandiri...'
-                        : selectedRole === 'GURU_DINIYAH'
-                        ? 'Contoh: Surat An-Naba ayat 1-15, bimbingan makhraj huruf dan kelancaran tajwid...'
-                        : 'Contoh: Bab 2 Perkalian dan Pembagian Pecahan...'
-                    }
+                    placeholder="Contoh: Bab 2 Perkalian dan Pembagian Pecahan..."
                     className="w-full px-4 py-3.5 rounded-2xl border border-slate-300 text-base leading-relaxed"
                   />
                 </div>
@@ -1729,17 +1659,6 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                       className="w-full px-4 py-3.5 rounded-xl border border-slate-300 font-semibold text-base min-h-[48px]"
                     >
                       <option value="KBM">KBM (Kegiatan Belajar Mengajar)</option>
-                      {selectedRole === 'GURU_BANTU' && (
-                        <option value="Pendampingan">Pendampingan Belajar / Inklusi</option>
-                      )}
-                      {selectedRole === 'GURU_DINIYAH' && (
-                        <>
-                          <option value="Tahsin">Tahsin / Tilawah</option>
-                          <option value="Tahfidz">Tahfidz / Setoran Hafalan</option>
-                          <option value="Praktik Ibadah">Praktik Ibadah / Sholat</option>
-                          <option value="Bimbingan Diniyah">Bimbingan Diniyah</option>
-                        </>
-                      )}
                       <option value="UH">UH (Ulangan Harian)</option>
                       <option value="PTS">PTS (Penilaian Tengah Semester)</option>
                       <option value="PAS">PAS (Penilaian Akhir Semester)</option>
@@ -1781,27 +1700,19 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                 <div className="pt-2">
                   <button
                     type="submit"
-                    disabled={selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0}
+                    disabled={schoolSubjects.length === 0}
                     className={`w-full py-4 px-6 font-black rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-base sm:text-lg min-h-[52px] ${
-                      selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0
+                      schoolSubjects.length === 0
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
-                        : selectedRole === 'GURU_BANTU'
-                        ? 'bg-purple-700 hover:bg-purple-800 text-white shadow-purple-700/25 cursor-pointer active:scale-98'
-                        : selectedRole === 'GURU_DINIYAH'
-                        ? 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-700/25 cursor-pointer active:scale-98'
                         : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-700/25 cursor-pointer active:scale-98'
                     }`}
                   >
-                    {selectedRole === 'GURU_BIDANG_STUDI' && schoolSubjects.length === 0 ? (
+                    {schoolSubjects.length === 0 ? (
                       <span>belum ada tugas mengajar</span>
                     ) : (
                       <>
                         <Save className="w-5 h-5" />
-                        <span>
-                          {selectedRole === 'GURU_BIDANG_STUDI' && 'Simpan Jurnal KBM Kelas Ini'}
-                          {selectedRole === 'GURU_BANTU' && 'Simpan Jurnal Pendampingan Kelas Ini'}
-                          {selectedRole === 'GURU_DINIYAH' && 'Simpan Jurnal Bimbingan Diniyah Kelas Ini'}
-                        </span>
+                        <span>Simpan Jurnal KBM Kelas Ini</span>
                       </>
                     )}
                   </button>
@@ -1944,27 +1855,21 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                   >
                     {selectedRole === 'GURU_BIDANG_STUDI' && (
                       <>
-                        <option value="DAFTAR_HADIR_GURU">Daftar Hadir KBM Bidang Studi (Per-Kelas)</option>
-                        <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Per-Kelas)</option>
+                        <option value="DAFTAR_HADIR_GURU">DAFTAR HADIR GURU (Per-Kelas)</option>
+                        <option value="JURNAL_KELAS">REKAP JURNAL PEMBELAJARAN KELAS (Per-Kelas)</option>
                       </>
                     )}
                     {selectedRole === 'GURU_BANTU' && (
-                      <>
-                        <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Guru Bantu (Per-Kelas)</option>
-                        <option value="JURNAL_KELAS">Jurnal Pendampingan Kelas (Per-Kelas)</option>
-                      </>
+                      <option value="DAFTAR_HADIR_GURU_BANTU">DAFTAR HADIR GURU BANTU (Per-Kelas)</option>
                     )}
                     {selectedRole === 'GURU_DINIYAH' && (
-                      <>
-                        <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Guru Diniyah (Per-Kelas)</option>
-                        <option value="JURNAL_KELAS">Jurnal Bimbingan Diniyah (Per-Kelas)</option>
-                      </>
+                      <option value="DAFTAR_HADIR_GURU_DINIYAH">DAFTAR HADIR GURU DINIYAH (Per-Kelas)</option>
                     )}
                     {selectedRole === 'KOORDINATOR_KOKURIKULER' && (
-                      <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler (Persekolah)</option>
+                      <option value="DAFTAR_HADIR_KOKURIKULER">DAFTAR HADIR KOORDINATOR KOKURIKULER (P5)</option>
                     )}
                     {selectedRole === 'PEMBINA_EKSTRAKURIKULER' && (
-                      <option value="DAFTAR_HADIR_EKSTRAKURIKULER">Daftar Hadir Ekstrakurikuler (Persekolah)</option>
+                      <option value="DAFTAR_HADIR_EKSTRAKURIKULER">DAFTAR HADIR PEMBINA EKSTRAKURIKULER</option>
                     )}
                   </select>
                 </div>
@@ -1979,11 +1884,10 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                     </div>
                   ) : (
                     <select
-                      value={cetakClassId}
+                      value={effectiveCetakClassId}
                       onChange={(e) => setCetakClassId(e.target.value)}
                       className="w-full px-3 py-2.5 border border-slate-300 rounded-xl font-bold bg-white text-indigo-950 text-sm min-h-[42px]"
                     >
-                      <option value="">-- Semua Kelas --</option>
                       {schoolClasses.map((cls) => (
                         <option key={cls.id} value={cls.id}>
                           {cls.name} (Tingkat {cls.tingkat})
@@ -2034,6 +1938,7 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                   <PrintableJournalSheet
                     id="journal-print-document"
                     school={selectedSchool}
+                    classId={effectiveCetakClassId}
                     className={cetakClassName}
                     journals={filteredCetakJournals}
                     periodeText={`Bulan ${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][cetakMonth - 1]} ${cetakYear}`}
@@ -2047,8 +1952,8 @@ export const GuruDashboard: React.FC<GuruDashboardProps> = ({
                     docType={cetakDocType}
                     selectedMonth={cetakMonth}
                     selectedYear={cetakYear}
-                    selectedClassId={cetakClassId}
-                    className={cetakClassName}
+                    selectedClassId={isCetakPerSekolah ? undefined : effectiveCetakClassId}
+                    className={isCetakPerSekolah ? undefined : cetakClassName}
                     assignments={teacherAssignment ? [teacherAssignment] : []}
                     teachers={[currentUser]}
                     attendances={allAttendances.filter(

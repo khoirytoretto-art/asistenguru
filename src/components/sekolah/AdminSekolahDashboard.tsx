@@ -16,7 +16,7 @@ import {
   JenjangSekolah,
   Akreditasi,
 } from '../../types';
-import { StorageService } from '../../utils/storage';
+import { StorageService, normalizeDateString } from '../../utils/storage';
 import { exportToPdfClient, printDocumentUniversal } from '../../utils/pdfGenerator';
 import { PrintableAttendanceSheet } from '../print/PrintableAttendanceSheet';
 import { PrintableJournalSheet } from '../print/PrintableJournalSheet';
@@ -34,6 +34,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Database,
+  GraduationCap,
 } from 'lucide-react';
 
 interface AdminSekolahDashboardProps {
@@ -188,9 +189,11 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
     onSchoolUpdated();
   };
 
-  // Teachers assigned to this school (by yayasan, assignment, or subject)
+  // Teachers assigned to this school (by yayasan, assignment, subject, or who have logged attendance/journals)
   const assignmentTeacherIds = new Set(assignments.map((a) => a.teacherId));
   const subjectTeacherIds = new Set(subjects.map((s) => s.teacherId).filter(Boolean));
+  const attendanceTeacherIds = new Set(attendances.map((a) => a.teacherId).filter(Boolean));
+  const journalTeacherIds = new Set(journals.map((j) => j.teacherId).filter(Boolean));
 
   const yayasanTeachersForSchool = allUsers.filter(
     (u) =>
@@ -198,7 +201,9 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
       (u.assignedSchoolIds?.includes(school.id) ||
         u.schoolId === school.id ||
         assignmentTeacherIds.has(u.id) ||
-        subjectTeacherIds.has(u.id))
+        subjectTeacherIds.has(u.id) ||
+        attendanceTeacherIds.has(u.id) ||
+        journalTeacherIds.has(u.id))
   );
 
   // KECUALI KOKURIKULER DAN EKSTRA HANYA PERSEKOLAH
@@ -505,23 +510,68 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
     printDocumentUniversal({ elementId, paperSize });
   };
 
-  // 7. FILTERING LOGIC
-  const selectedClassName = classes.find((c) => c.id === selectedClassId)?.name;
+  // 7. FILTERING LOGIC (WAJIB PER-KELAS & TERINTEGRASI PENUH)
+  // Gabungkan kelas terdaftar dan kelas dari rekaman presensi / jurnal agar tidak ada data hilang
+  const recordedClassNames = new Set<string>();
+  attendances.forEach((a) => {
+    if (a.classId && a.classId !== 'persekolah') recordedClassNames.add(a.classId);
+  });
+  journals.forEach((j) => {
+    if (j.classId && j.classId !== 'persekolah') recordedClassNames.add(j.classId);
+  });
+
+  const allAvailableClasses = [...classes];
+  recordedClassNames.forEach((rcName) => {
+    const exists = allAvailableClasses.some(
+      (c) => c.id === rcName || c.name.toLowerCase() === rcName.toLowerCase()
+    );
+    if (!exists) {
+      allAvailableClasses.push({
+        id: rcName,
+        schoolId: school.id,
+        name: rcName,
+        tingkat: parseInt(rcName.replace(/\D/g, ''), 10) || 1,
+      });
+    }
+  });
+
+  const isClassMatch = (entryClassId?: string, targetIdOrName?: string) => {
+    if (!entryClassId || !targetIdOrName) return false;
+    const cClean = entryClassId.trim().toLowerCase();
+    const tClean = targetIdOrName.trim().toLowerCase();
+    if (cClean === tClean) return true;
+    const targetObj = allAvailableClasses.find(
+      (c) => c.id === targetIdOrName || c.name.toLowerCase() === tClean
+    );
+    if (targetObj) {
+      if (cClean === targetObj.id.toLowerCase() || cClean === targetObj.name.toLowerCase()) return true;
+      if (cClean.replace(/\s+/g, '') === targetObj.name.toLowerCase().replace(/\s+/g, '')) return true;
+    }
+    return false;
+  };
+
+  const effectiveClassId = selectedClassId || (allAvailableClasses.length > 0 ? allAvailableClasses[0].id : '');
+  const selectedClassObj = allAvailableClasses.find(
+    (c) => c.id === effectiveClassId || c.name.toLowerCase() === effectiveClassId.toLowerCase()
+  );
+  const selectedClassName = selectedClassObj?.name || (classes.length > 0 ? classes[0].name : 'Kelas');
 
   const filteredJournals = journals.filter((j) => {
-    if (selectedClassId && j.classId !== selectedClassId && j.classId !== selectedClassName) return false;
-    const cleanDate = (j.date || '').split('T')[0].trim();
+    // 1. Jurnal kelas wajib per-kelas
+    if (!effectiveClassId) return false;
+    const matchClass = isClassMatch(j.classId, effectiveClassId);
+    if (!matchClass) return false;
+
+    // 2. Normalisasi tanggal
+    const dateInfo = normalizeDateString(j.date);
+    if (!dateInfo) return false;
     if (filterType === 'HARIAN') {
       const targetDay = (selectedDay || '').split('T')[0].trim();
-      return cleanDate === targetDay;
+      return dateInfo.formatted === targetDay;
     } else if (filterType === 'BULANAN') {
-      const parts = cleanDate.split('-');
-      if (parts.length < 2) return false;
-      return parseInt(parts[0], 10) === selectedYear && parseInt(parts[1], 10) === selectedMonth;
+      return dateInfo.year === selectedYear && dateInfo.month === selectedMonth;
     } else if (filterType === 'TAHUNAN') {
-      const parts = cleanDate.split('-');
-      if (parts.length < 1) return false;
-      return parseInt(parts[0], 10) === selectedYear;
+      return dateInfo.year === selectedYear;
     }
     return true;
   });
@@ -641,23 +691,29 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
                   onChange={(e) => setDocType(e.target.value as DokumenCetakType)}
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-xl font-bold text-blue-900 bg-blue-50/50"
                 >
-                  <option value="DAFTAR_HADIR_GURU">Daftar Hadir Terpadu Per-Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
-                  <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
+                  <option value="DAFTAR_HADIR_GURU">DAFTAR HADIR GURU (Per-Kelas)</option>
+                  <option value="JURNAL_KELAS">REKAP JURNAL PEMBELAJARAN KELAS (Per-Kelas)</option>
                   {school.jenjang === 'SD' && (
                     <>
-                      <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Khusus Guru Bantu (Per-Kelas)</option>
-                      <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Khusus Guru Diniyah (Per-Kelas)</option>
+                      <option value="DAFTAR_HADIR_GURU_BANTU">DAFTAR HADIR GURU BANTU (Per-Kelas)</option>
+                      <option value="DAFTAR_HADIR_GURU_DINIYAH">DAFTAR HADIR GURU DINIYAH (Per-Kelas)</option>
                     </>
                   )}
-                  <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler P5 (Hanya Persekolah)</option>
-                  <option value="DAFTAR_HADIR_EKSTRAKURIKULER">Daftar Hadir Ekstrakurikuler (Hanya Persekolah)</option>
+                  <option value="DAFTAR_HADIR_KOKURIKULER">DAFTAR HADIR KOORDINATOR KOKURIKULER (P5)</option>
+                  <option value="DAFTAR_HADIR_EKSTRAKURIKULER">DAFTAR HADIR PEMBINA EKSTRAKURIKULER</option>
                 </select>
               </div>
 
-              {/* FILTER KELAS: DIBUAT PER-KELAS KECUALI KOKURIKULER & EKSTRA */}
+              {/* DROPDOWN PEMILIHAN KELAS DOKUMEN CETAK */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1.5">
-                  {isDocPerSekolah ? 'Cakupan Lembaga:' : 'Filter Kelas (Wajib Per-Kelas):'}
+                <label className="block font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <GraduationCap className="w-3.5 h-3.5 text-indigo-700" />
+                    <span>Pilih Kelas Rekap:</span>
+                  </span>
+                  <span className="text-[10px] text-indigo-700 font-extrabold uppercase">
+                    {isDocPerSekolah ? 'Lembaga' : 'Per-Kelas'}
+                  </span>
                 </label>
                 {isDocPerSekolah ? (
                   <div className="w-full px-3 py-2.5 border border-purple-300 rounded-xl bg-purple-50 text-purple-900 font-bold text-center">
@@ -665,16 +721,23 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
                   </div>
                 ) : (
                   <select
-                    value={selectedClassId}
+                    value={effectiveClassId}
                     onChange={(e) => setSelectedClassId(e.target.value)}
-                    className="w-full px-3 py-2.5 border border-slate-300 rounded-xl font-bold bg-white text-indigo-950"
+                    className="w-full px-3 py-2.5 border-2 border-indigo-400 focus:border-indigo-600 rounded-xl font-bold bg-white text-indigo-950 shadow-xs cursor-pointer text-xs"
                   >
-                    <option value="">-- Semua Kelas --</option>
-                    {classes.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
+                    {allAvailableClasses.length === 0 ? (
+                      <option value="">-- Belum ada data kelas --</option>
+                    ) : (
+                      allAvailableClasses.map((c) => {
+                        const attCount = attendances.filter((a) => isClassMatch(a.classId, c.id)).length;
+                        const jrnCount = journals.filter((j) => isClassMatch(j.classId, c.id)).length;
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({attCount} presensi, {jrnCount} jurnal)
+                          </option>
+                        );
+                      })
+                    )}
                   </select>
                 )}
               </div>
@@ -721,7 +784,15 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
                     <input
                       type="date"
                       value={selectedDay}
-                      onChange={(e) => setSelectedDay(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSelectedDay(val);
+                        const dInfo = normalizeDateString(val);
+                        if (dInfo) {
+                          setSelectedMonth(dInfo.month);
+                          setSelectedYear(dInfo.year);
+                        }
+                      }}
                       className="w-full px-3 py-2 border border-slate-300 rounded-xl"
                     />
                   </div>
@@ -771,6 +842,48 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
 
           {/* Pratinjau Dokumen Landscape */}
           <div className="border border-slate-200 rounded-3xl bg-slate-100 p-4 overflow-x-auto shadow-inner">
+            {/* Quick Class Switcher Toolbar */}
+            {!isDocPerSekolah && allAvailableClasses.length > 0 && (
+              <div className="bg-white rounded-2xl border border-indigo-200 p-3 mb-3 no-print flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-black text-indigo-950 flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-indigo-700" />
+                    <span>Kelas Cetak Terpilih:</span>
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {allAvailableClasses.map((c) => {
+                      const isSelected = effectiveClassId === c.id;
+                      const attCount = attendances.filter((a) => isClassMatch(a.classId, c.id)).length;
+                      const jrnCount = journals.filter((j) => isClassMatch(j.classId, c.id)).length;
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setSelectedClassId(c.id)}
+                          className={`px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                            isSelected
+                              ? 'bg-indigo-700 text-white shadow-xs'
+                              : 'bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-900 border border-slate-200'
+                          }`}
+                        >
+                          <span>{c.name}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                            isSelected ? 'bg-indigo-900 text-indigo-100' : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {attCount} presensi / {jrnCount} jurnal
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="text-[11px] font-semibold text-slate-500 flex items-center gap-2">
+                  <span>Dokumen khusus kelas: <strong className="text-indigo-950 font-bold">{selectedClassName}</strong></span>
+                </div>
+              </div>
+            )}
+
             {/* Quick Signature & Date Toolbar */}
             <div className="bg-white rounded-2xl border border-slate-200 p-3 mb-3 no-print flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
               <div className="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -841,6 +954,7 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
               {docType === 'JURNAL_KELAS' ? (
                 <PrintableJournalSheet
                   school={{ ...school, signatureConfig }}
+                  classId={effectiveClassId}
                   className={selectedClassName}
                   journals={filteredJournals}
                   periodeText={getPeriodeLabel()}
@@ -853,7 +967,7 @@ export const AdminSekolahDashboard: React.FC<AdminSekolahDashboardProps> = ({
                   docType={docType}
                   selectedMonth={selectedMonth}
                   selectedYear={selectedYear}
-                  selectedClassId={isDocPerSekolah ? undefined : selectedClassId}
+                  selectedClassId={isDocPerSekolah ? undefined : effectiveClassId}
                   className={isDocPerSekolah ? undefined : selectedClassName}
                   assignments={assignments}
                   teachers={yayasanTeachersForSchool}

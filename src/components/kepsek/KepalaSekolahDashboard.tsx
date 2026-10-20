@@ -10,7 +10,7 @@ import {
   JenisKegiatan,
   KeteranganJurnal,
 } from '../../types';
-import { StorageService } from '../../utils/storage';
+import { StorageService, normalizeDateString } from '../../utils/storage';
 import { exportToPdfClient, printDocumentUniversal } from '../../utils/pdfGenerator';
 import { PrintableAttendanceSheet } from '../print/PrintableAttendanceSheet';
 import { PrintableJournalSheet } from '../print/PrintableJournalSheet';
@@ -26,6 +26,7 @@ import {
   Users,
   Building2,
   Trash2,
+  GraduationCap,
 } from 'lucide-react';
 
 interface KepalaSekolahDashboardProps {
@@ -233,11 +234,63 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
   const allAttendances = StorageService.getAttendances({ schoolId: currentSchool.id });
   const assignments = StorageService.getAssignmentsBySchool(currentSchool.id);
   const users = StorageService.getUsers();
+  const assignmentTeacherIds = new Set(assignments.map((a) => a.teacherId));
+  const attendanceTeacherIds = new Set(allAttendances.map((a) => a.teacherId).filter(Boolean));
+  const journalTeacherIds = new Set(allJournals.map((j) => j.teacherId).filter(Boolean));
+
   const schoolTeachers = users.filter(
     (u) =>
       (u.role === 'GURU' || u.role === 'KEPALA_SEKOLAH') &&
-      (u.assignedSchoolIds?.includes(currentSchool.id) || u.schoolId === currentSchool.id)
+      (u.assignedSchoolIds?.includes(currentSchool.id) ||
+        u.schoolId === currentSchool.id ||
+        assignmentTeacherIds.has(u.id) ||
+        attendanceTeacherIds.has(u.id) ||
+        journalTeacherIds.has(u.id))
   );
+
+  // Gabungkan kelas resmi dan kelas dari rekaman riwayat guru
+  const recordedClassNames = new Set<string>();
+  allAttendances.forEach((a) => {
+    if (a.classId && a.classId !== 'persekolah') recordedClassNames.add(a.classId);
+  });
+  allJournals.forEach((j) => {
+    if (j.classId && j.classId !== 'persekolah') recordedClassNames.add(j.classId);
+  });
+
+  const allAvailableClasses = [...classes];
+  recordedClassNames.forEach((rcName) => {
+    const exists = allAvailableClasses.some(
+      (c) => c.id === rcName || c.name.toLowerCase() === rcName.toLowerCase()
+    );
+    if (!exists) {
+      allAvailableClasses.push({
+        id: rcName,
+        schoolId: currentSchool.id,
+        name: rcName,
+        tingkat: parseInt(rcName.replace(/\D/g, ''), 10) || 1,
+      });
+    }
+  });
+
+  const isClassMatch = (entryClassId?: string, targetIdOrName?: string) => {
+    if (!entryClassId || !targetIdOrName) return false;
+    const cClean = entryClassId.trim().toLowerCase();
+    const tClean = targetIdOrName.trim().toLowerCase();
+    if (cClean === tClean) return true;
+    const targetObj = allAvailableClasses.find(
+      (c) => c.id === targetIdOrName || c.name.toLowerCase() === tClean
+    );
+    if (targetObj) {
+      if (cClean === targetObj.id.toLowerCase() || cClean === targetObj.name.toLowerCase()) return true;
+      if (cClean.replace(/\s+/g, '') === targetObj.name.toLowerCase().replace(/\s+/g, '')) return true;
+    }
+    return false;
+  };
+
+  const effectiveClassId = selectedClassId || (allAvailableClasses.length > 0 ? allAvailableClasses[0].id : '');
+  const selectedClassName = allAvailableClasses.find(
+    (c) => c.id === effectiveClassId || c.name.toLowerCase() === effectiveClassId.toLowerCase()
+  )?.name || (classes.length > 0 ? classes[0].name : 'Kelas');
 
   const handleDownloadPdf = async () => {
     const elementId =
@@ -245,8 +298,7 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
         ? 'kepsek-journal-print'
         : 'kepsek-attendance-print';
     setPdfLoadingStatus(`Memproses PDF ${paperSize}...`);
-    const selectedClassName = classes.find((c) => c.id === selectedClassId)?.name || 'Semua';
-    const tag = isDocPerSekolah ? 'Persekolah' : selectedClassName.replace(/\s+/g, '_');
+    const tag = isDocPerSekolah ? 'Persekolah' : (selectedClassName || 'Kelas').replace(/\s+/g, '_');
     const filename = `Kepsek_${docType}_${currentSchool.name}_${tag}_${paperSize}.pdf`;
 
     const success = await exportToPdfClient({
@@ -270,8 +322,6 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
         : 'kepsek-attendance-print';
     printDocumentUniversal({ elementId, paperSize });
   };
-
-  const selectedClassName = classes.find((c) => c.id === selectedClassId)?.name;
 
   return (
     <div className="space-y-6">
@@ -739,42 +789,56 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
                 onChange={(e) => setDocType(e.target.value as DokumenCetakType)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold bg-white text-indigo-950"
               >
-                <option value="DAFTAR_HADIR_GURU">Daftar Hadir Terpadu Per-Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
-                <option value="JURNAL_KELAS">Jurnal Pembelajaran Kelas (Guru Studi, Bantu &amp; Diniyah)</option>
+                <option value="DAFTAR_HADIR_GURU">DAFTAR HADIR GURU (Per-Kelas)</option>
+                <option value="JURNAL_KELAS">REKAP JURNAL PEMBELAJARAN KELAS (Per-Kelas)</option>
                 {currentSchool.jenjang === 'SD' && (
                   <>
-                    <option value="DAFTAR_HADIR_GURU_BANTU">Daftar Hadir Khusus Guru Bantu (Per-Kelas)</option>
-                    <option value="DAFTAR_HADIR_GURU_DINIYAH">Daftar Hadir Khusus Guru Diniyah (Per-Kelas)</option>
+                    <option value="DAFTAR_HADIR_GURU_BANTU">DAFTAR HADIR GURU BANTU (Per-Kelas)</option>
+                    <option value="DAFTAR_HADIR_GURU_DINIYAH">DAFTAR HADIR GURU DINIYAH (Per-Kelas)</option>
                   </>
                 )}
-                <option value="DAFTAR_HADIR_KOKURIKULER">Daftar Hadir Kokurikuler P5 (Hanya Persekolah)</option>
-                <option value="DAFTAR_HADIR_EKSTRAKURIKULER">Daftar Hadir Ekstrakurikuler (Hanya Persekolah)</option>
+                <option value="DAFTAR_HADIR_KOKURIKULER">DAFTAR HADIR KOORDINATOR KOKURIKULER (P5)</option>
+                <option value="DAFTAR_HADIR_EKSTRAKURIKULER">DAFTAR HADIR PEMBINA EKSTRAKURIKULER</option>
               </select>
             </div>
 
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                {isDocPerSekolah ? 'Cakupan Lembaga:' : 'Filter Kelas (Wajib Per-Kelas):'}
-              </label>
-              {isDocPerSekolah ? (
-                <div className="px-3 py-2 border border-purple-300 rounded-xl bg-purple-50 text-purple-900 font-bold text-center">
-                  Tingkat Persekolah (Seluruh Lembaga)
-                </div>
-              ) : (
-                <select
-                  value={selectedClassId}
-                  onChange={(e) => setSelectedClassId(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold bg-white text-indigo-950"
-                >
-                  <option value="">-- Semua Kelas --</option>
-                  {classes.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+              {/* DROPDOWN PEMILIHAN KELAS DOKUMEN CETAK */}
+              <div>
+                <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <GraduationCap className="w-3.5 h-3.5 text-indigo-700" />
+                    <span>Pilih Kelas Rekap:</span>
+                  </span>
+                  <span className="text-[10px] text-indigo-700 font-extrabold uppercase">
+                    {isDocPerSekolah ? 'Lembaga' : 'Per-Kelas'}
+                  </span>
+                </label>
+                {isDocPerSekolah ? (
+                  <div className="px-3 py-2 border border-purple-300 rounded-xl bg-purple-50 text-purple-900 font-bold text-center">
+                    Tingkat Persekolah (Seluruh Lembaga)
+                  </div>
+                ) : (
+                  <select
+                    value={effectiveClassId}
+                    onChange={(e) => setSelectedClassId(e.target.value)}
+                    className="w-full px-3 py-2 border-2 border-indigo-400 focus:border-indigo-600 rounded-xl font-bold bg-white text-indigo-950 shadow-xs cursor-pointer text-xs"
+                  >
+                    {allAvailableClasses.length === 0 ? (
+                      <option value="">-- Belum ada data kelas --</option>
+                    ) : (
+                      allAvailableClasses.map((c) => {
+                        const attCount = allAttendances.filter((a) => isClassMatch(a.classId, c.id)).length;
+                        const jrnCount = allJournals.filter((j) => isClassMatch(j.classId, c.id)).length;
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({attCount} presensi, {jrnCount} jurnal)
+                          </option>
+                        );
+                      })
+                    )}
+                  </select>
+                )}
+              </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -805,19 +869,62 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
           </div>
 
           <div className="bg-slate-100 p-4 rounded-3xl border border-slate-300 overflow-x-auto shadow-inner">
+            {/* Quick Class Switcher Toolbar */}
+            {!isDocPerSekolah && allAvailableClasses.length > 0 && (
+              <div className="bg-white rounded-2xl border border-indigo-200 p-3 mb-3 no-print flex flex-wrap items-center justify-between gap-3 shadow-2xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-black text-indigo-950 flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-indigo-700" />
+                    <span>Kelas Cetak Terpilih:</span>
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {allAvailableClasses.map((c) => {
+                      const isSelected = effectiveClassId === c.id;
+                      const attCount = allAttendances.filter((a) => isClassMatch(a.classId, c.id)).length;
+                      const jrnCount = allJournals.filter((j) => isClassMatch(j.classId, c.id)).length;
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setSelectedClassId(c.id)}
+                          className={`px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                            isSelected
+                              ? 'bg-indigo-700 text-white shadow-xs'
+                              : 'bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-900 border border-slate-200'
+                          }`}
+                        >
+                          <span>{c.name}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                            isSelected ? 'bg-indigo-900 text-indigo-100' : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {attCount} presensi / {jrnCount} jurnal
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="text-[11px] font-semibold text-slate-500 flex items-center gap-2">
+                  <span>Dokumen khusus kelas: <strong className="text-indigo-950 font-bold">{selectedClassName}</strong></span>
+                </div>
+              </div>
+            )}
+
             <div className="bg-white rounded-2xl shadow-lg border border-slate-300 overflow-hidden">
               {docType === 'JURNAL_KELAS' ? (
                 <PrintableJournalSheet
                   id="kepsek-journal-print"
                   school={currentSchool}
+                  classId={effectiveClassId}
                   className={selectedClassName}
                   journals={allJournals.filter((j) => {
-                    if (selectedClassId && j.classId !== selectedClassId && j.classId !== selectedClassName) return false;
-                    if (!j.date) return true;
-                    const cleanDate = j.date.split('T')[0].trim();
-                    const parts = cleanDate.split('-');
-                    if (parts.length < 2) return false;
-                    return parseInt(parts[0], 10) === selectedYear && parseInt(parts[1], 10) === selectedMonth;
+                    if (!effectiveClassId) return false;
+                    const matchClass = isClassMatch(j.classId, effectiveClassId);
+                    if (!matchClass) return false;
+                    const dateInfo = normalizeDateString(j.date);
+                    if (!dateInfo) return false;
+                    return dateInfo.year === selectedYear && dateInfo.month === selectedMonth;
                   })}
                   periodeText={`Bulan ${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][selectedMonth - 1]} ${selectedYear}`}
                   paperSize={paperSize}
@@ -830,7 +937,7 @@ export const KepalaSekolahDashboard: React.FC<KepalaSekolahDashboardProps> = ({
                   docType={docType}
                   selectedMonth={selectedMonth}
                   selectedYear={selectedYear}
-                  selectedClassId={isDocPerSekolah ? undefined : selectedClassId}
+                  selectedClassId={isDocPerSekolah ? undefined : effectiveClassId}
                   className={isDocPerSekolah ? undefined : selectedClassName}
                   assignments={assignments}
                   teachers={schoolTeachers}

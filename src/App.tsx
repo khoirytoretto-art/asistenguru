@@ -33,10 +33,10 @@ export default function App() {
       setKey((prev) => prev + 1);
     });
 
-    // Background sync real-time setiap 12 detik agar data yang diisi guru langsung masuk di semua perangkat
+    // Background sync real-time ultra-cepat setiap 3.5 detik (dengan ETag 304, zero overhead)
     const syncInterval = setInterval(() => {
       StorageService.syncFromServer();
-    }, 12000);
+    }, 3500);
 
     // Sinkronisasi otomatis saat browser / tab kembali aktif (dengan debouncing)
     let focusDebounce: any = null;

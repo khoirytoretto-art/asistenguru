@@ -1,10 +1,11 @@
 import React from 'react';
 import { School, ClassJournalEntry, PaperSize } from '../../types';
-import { StorageService } from '../../utils/storage';
+import { StorageService, normalizeDateString } from '../../utils/storage';
 
 interface PrintableJournalSheetProps {
   id?: string;
   school: School;
+  classId?: string;
   className?: string;
   journals: ClassJournalEntry[];
   periodeText: string;
@@ -15,6 +16,7 @@ interface PrintableJournalSheetProps {
 export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
   id = 'journal-print-document',
   school,
+  classId,
   className,
   journals,
   periodeText,
@@ -22,6 +24,17 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
   selectedMonth,
 }) => {
   const foundation = StorageService.getFoundation();
+  const schoolClasses = StorageService.getClasses(school.id);
+  const classObj = schoolClasses.find(
+    (c) => (classId && c.id === classId) || (className && (c.name.toLowerCase() === className.toLowerCase() || c.id === className))
+  );
+  const displayClassName = classObj
+    ? classObj.name
+    : (className || (schoolClasses.length > 0 ? schoolClasses[0].name : 'Kelas'));
+  const effectiveClassId = classObj
+    ? classObj.id
+    : (classId || (schoolClasses.length > 0 ? schoolClasses[0].id : ''));
+
   const todayFormatted = new Date().toLocaleDateString('id-ID', {
     day: 'numeric',
     month: 'long',
@@ -49,19 +62,30 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
   // Tampilan Semester Sesuai Ketentuan Resmi:
   // Bulan Juli - Desember = Semester Ganjil
   // Bulan Januari - Juni = Semester Genap
-  const derivedMonth =
-    selectedMonth ||
-    (journals.length > 0 && journals[0].date
-      ? parseInt(journals[0].date.split('-')[1], 10)
-      : new Date().getMonth() + 1);
+  const firstDateInfo = journals.length > 0 && journals[0].date ? normalizeDateString(journals[0].date) : null;
+  const derivedMonth = selectedMonth || (firstDateInfo ? firstDateInfo.month : new Date().getMonth() + 1);
   const semesterLabel = derivedMonth >= 7 && derivedMonth <= 12 ? 'Semester Ganjil' : 'Semester Genap';
+
+  // Jurnal pembelajaran kelas WAJIB PER-KELAS
+  const studyJournals = journals.filter((j) => {
+    // Wajib sesuai kelas masing-masing
+    if (!j.classId) return false;
+    const jc = j.classId.trim().toLowerCase();
+    const matchId = effectiveClassId ? jc === effectiveClassId.toLowerCase() : false;
+    const matchName = displayClassName ? jc === displayClassName.toLowerCase() : false;
+    const matchRawName = className ? jc === className.trim().toLowerCase() : false;
+    const matchClean = displayClassName ? jc.replace(/\s+/g, '') === displayClassName.toLowerCase().replace(/\s+/g, '') : false;
+    return matchId || matchName || matchRawName || matchClean;
+  });
 
   // Urutkan rekaman jurnal pembelajaran:
   // 1. Tanggal dimulai dari yang terlama (ascending: tanggal terlama ke tanggal terbaru)
   // 2. Jam ke- nya dimulai dari 1 (ascending: 1, 2, 3...)
-  const sortedJournals = [...journals].sort((a, b) => {
-    const dateA = a.date ? a.date.split('-').map((p) => p.padStart(2, '0')).join('-') : '';
-    const dateB = b.date ? b.date.split('-').map((p) => p.padStart(2, '0')).join('-') : '';
+  const sortedJournals = [...studyJournals].sort((a, b) => {
+    const infoA = normalizeDateString(a.date);
+    const infoB = normalizeDateString(b.date);
+    const dateA = infoA ? infoA.formatted : (a.date || '');
+    const dateB = infoB ? infoB.formatted : (b.date || '');
     if (dateA !== dateB) {
       return dateA.localeCompare(dateB);
     }
@@ -137,14 +161,14 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
 
       {/* JUDUL REKAP JURNAL KELAS */}
       <div className="text-center mb-4">
-        <h2 className="text-base font-bold underline tracking-wide uppercase text-slate-950">
-          REKAP JURNAL PEMBELAJARAN KELAS (GURU STUDI, GURU BANTU &amp; GURU DINIYAH)
+        <h2 className="text-base sm:text-lg font-bold underline tracking-wide uppercase text-slate-950">
+          REKAP JURNAL PEMBELAJARAN KELAS
         </h2>
         <div className="flex justify-between items-center text-xs font-semibold mt-2 px-1 text-slate-800">
           <div>
             <span>Kelas: </span>
             <span className="font-bold text-indigo-950 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-              {className || 'Semua Kelas'}
+              {displayClassName}
             </span>
           </div>
           <div>
@@ -175,9 +199,9 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '36px' }}>No</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: '130px' }}>Hari / Tanggal</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '60px' }}>Jam Ke</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Mata Pelajaran / Tugas</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Nama &amp; Peran Guru</th>
-              <th style={{ border: '1px solid #0f172a', padding: '6px 8px' }}>Materi Pembelajaran / Bimbingan</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Mata Pelajaran</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px', width: isF4 ? '200px' : '170px' }}>Nama Guru</th>
+              <th style={{ border: '1px solid #0f172a', padding: '6px 8px' }}>Materi Pembelajaran</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', textAlign: 'center', width: '110px' }}>Jenis Kegiatan</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 8px', textAlign: 'center', width: '110px' }}>Keterangan</th>
               <th style={{ border: '1px solid #0f172a', padding: '6px 4px', textAlign: 'center', width: '65px' }}>Paraf</th>
@@ -201,27 +225,17 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
               </tr>
             ) : (
               sortedJournals.map((j, idx) => {
-                const parts = (j.date || '').split('T')[0].trim().split('-').map(Number);
-                const dateObj = parts.length === 3 ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date(j.date);
-                const dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'long' });
-                const formattedDate = dateObj.toLocaleDateString('id-ID', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                });
-
-                // Deteksi peran guru
-                let roleBadgeText = 'Guru Studi';
-                let roleBadgeBg = '#e0f2fe';
-                let roleBadgeColor = '#0369a1';
-                if (j.teacherRole === 'GURU_BANTU' || j.subjectName?.toLowerCase().includes('bantu') || j.materi?.toLowerCase().includes('pendampingan')) {
-                  roleBadgeText = 'Guru Bantu';
-                  roleBadgeBg = '#f3e8ff';
-                  roleBadgeColor = '#7e22ce';
-                } else if (j.teacherRole === 'GURU_DINIYAH' || j.subjectName?.toLowerCase().includes('diniyah') || j.materi?.toLowerCase().includes('tahsin') || j.materi?.toLowerCase().includes('tahfidz')) {
-                  roleBadgeText = 'Guru Diniyah';
-                  roleBadgeBg = '#dcfce7';
-                  roleBadgeColor = '#15803d';
+                const dateInfo = normalizeDateString(j.date);
+                let dayName = '-';
+                let formattedDate = j.date || '-';
+                if (dateInfo) {
+                  const dateObj = new Date(dateInfo.year, dateInfo.month - 1, dateInfo.day);
+                  dayName = dateObj.toLocaleDateString('id-ID', { weekday: 'long' });
+                  formattedDate = dateObj.toLocaleDateString('id-ID', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  });
                 }
 
                 return (
@@ -248,20 +262,6 @@ export const PrintableJournalSheet: React.FC<PrintableJournalSheetProps> = ({
                     </td>
                     <td style={{ border: '1px solid #0f172a', padding: '6px 8px', verticalAlign: 'top', wordBreak: 'break-word' }}>
                       <div className="font-medium text-slate-900">{j.teacherName}</div>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          padding: '1px 6px',
-                          borderRadius: '4px',
-                          fontSize: '9px',
-                          fontWeight: 'bold',
-                          marginTop: '2px',
-                          backgroundColor: roleBadgeBg,
-                          color: roleBadgeColor,
-                        }}
-                      >
-                        {roleBadgeText}
-                      </span>
                     </td>
                     <td style={{ border: '1px solid #0f172a', padding: '6px 8px', verticalAlign: 'top', wordBreak: 'break-word' }}>
                       <p className="text-slate-900 leading-snug">{j.materi}</p>

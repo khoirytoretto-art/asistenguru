@@ -1,6 +1,6 @@
 import React from 'react';
 import { School, TeacherAssignment, User, TeacherAttendanceEntry, DokumenCetakType, PaperSize } from '../../types';
-import { StorageService } from '../../utils/storage';
+import { StorageService, normalizeDateString } from '../../utils/storage';
 
 interface PrintableAttendanceSheetProps {
   id?: string;
@@ -49,8 +49,6 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     docType === 'DAFTAR_HADIR_KOKURIKULER' ||
     docType === 'DAFTAR_HADIR_EKSTRAKURIKULER';
 
-  const isUnifiedPerKelas = docType === 'DAFTAR_HADIR_GURU';
-
   const roleFilter = 
     docType === 'DAFTAR_HADIR_GURU_BANTU' ? 'GURU_BANTU' :
     docType === 'DAFTAR_HADIR_GURU_DINIYAH' ? 'GURU_DINIYAH' :
@@ -63,6 +61,35 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
 
   // Subject assignments in this school (for identifying teachers with teaching duties)
   const schoolSubjects = StorageService.getSubjects(school.id);
+  const schoolClasses = StorageService.getClasses(school.id);
+
+  // Resolusi target kelas yang ketat & akurat per-kelas
+  const selectedClassObj = selectedClassId
+    ? schoolClasses.find((c) => c.id === selectedClassId || c.name.toLowerCase() === selectedClassId.toLowerCase())
+    : null;
+  const targetClassId = selectedClassObj
+    ? selectedClassObj.id
+    : (selectedClassId || (!isPerSekolahOnly && schoolClasses.length > 0 ? schoolClasses[0].id : undefined));
+  const targetClassName = selectedClassObj
+    ? selectedClassObj.name
+    : (className || (!isPerSekolahOnly && schoolClasses.length > 0 ? schoolClasses[0].name : undefined));
+
+  const matchesClass = (classId?: string) => {
+    if (isPerSekolahOnly) return true;
+    if (!classId) return false; // Rekaman tanpa data kelas TIDAK BOLEH bocor ke kelas manapun!
+    if (!targetClassId && !targetClassName) return false;
+    const cClean = classId.trim().toLowerCase();
+    const targetClean = targetClassId ? targetClassId.trim().toLowerCase() : '';
+    const targetNameClean = targetClassName ? targetClassName.trim().toLowerCase() : '';
+    return (
+      (targetClean !== '' && cClean === targetClean) ||
+      (targetNameClean !== '' && cClean === targetNameClean) ||
+      (selectedClassObj ? cClean === selectedClassObj.id.toLowerCase() : false) ||
+      (selectedClassObj ? cClean === selectedClassObj.name.toLowerCase() : false) ||
+      (selectedClassObj ? cClean.replace(/\s+/g, '') === selectedClassObj.name.toLowerCase().replace(/\s+/g, '') : false) ||
+      (targetNameClean !== '' && cClean.replace(/\s+/g, '') === targetNameClean.replace(/\s+/g, ''))
+    );
+  };
 
   // Semua guru yang terhubung ke sekolah ini (dari penugasan, assignedSchoolIds, atau schoolId)
   const schoolTeachers = teachers.filter((t) => {
@@ -75,11 +102,11 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     return false;
   });
 
-  // Guru yang memiliki rekaman presensi pada sekolah dan kelas ini
+  // Guru yang memiliki rekaman presensi pada sekolah dan kelas ini untuk role yang diminta
   const attendanceTeacherIds = new Set<string>();
   attendances.forEach((a) => {
     if (a.schoolId && a.schoolId !== school.id) return;
-    if (!isPerSekolahOnly && selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) return;
+    if (!matchesClass(a.classId)) return;
 
     if (docType === 'DAFTAR_HADIR_KOKURIKULER') {
       if (
@@ -104,25 +131,28 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     }
 
     if (docType === 'DAFTAR_HADIR_GURU_BANTU') {
-      if (a.roleUsed === 'GURU_BANTU') {
+      if (a.roleUsed === 'GURU_BANTU' || a.roleUsed?.toLowerCase().includes('bantu')) {
         if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
       }
       return;
     }
 
     if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') {
-      if (a.roleUsed === 'GURU_DINIYAH') {
+      if (a.roleUsed === 'GURU_DINIYAH' || a.roleUsed?.toLowerCase().includes('diniyah')) {
         if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
       }
       return;
     }
 
-    // Dokumen Per-Kelas Terpadu (DAFTAR_HADIR_GURU): Mencakup Guru Studi, Guru Bantu, dan Guru Diniyah
+    // Dokumen DAFTAR_HADIR_GURU: Guru Bidang Studi / Mapel / Guru Umum
+    const rUsed = (a.roleUsed || '') as string;
     if (
-      a.roleUsed === 'GURU_BIDANG_STUDI' ||
-      a.roleUsed === 'GURU_BANTU' ||
-      a.roleUsed === 'GURU_DINIYAH' ||
-      !a.roleUsed
+      !rUsed ||
+      rUsed === 'GURU_BIDANG_STUDI' ||
+      rUsed === 'GURU' ||
+      rUsed === 'GURU_KELAS' ||
+      rUsed === 'GURU_MAPEL' ||
+      rUsed === 'WALI_KELAS'
     ) {
       if (a.teacherId) attendanceTeacherIds.add(a.teacherId);
     }
@@ -133,8 +163,8 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     schoolSubjects
       .filter((subj) => {
         if (!subj.teacherId) return false;
-        if (!isPerSekolahOnly && selectedClassId && subj.classIds && subj.classIds.length > 0) {
-          return subj.classIds.includes(selectedClassId);
+        if (!isPerSekolahOnly && targetClassId && subj.classIds && subj.classIds.length > 0) {
+          return subj.classIds.some((cid) => matchesClass(cid));
         }
         return true;
       })
@@ -147,11 +177,9 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   // 1. Tambahkan dari schoolAssignments
   schoolAssignments.forEach((asg) => {
     let matchRole = false;
-    if (isUnifiedPerKelas) {
+    if (docType === 'DAFTAR_HADIR_GURU') {
       matchRole =
         asg.roles.includes('GURU_BIDANG_STUDI') ||
-        asg.roles.includes('GURU_BANTU') ||
-        asg.roles.includes('GURU_DINIYAH') ||
         subjectTeacherIds.has(asg.teacherId) ||
         attendanceTeacherIds.has(asg.teacherId);
     } else {
@@ -161,8 +189,9 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     if (!matchRole) return;
 
     // Filter per-kelas jika penugasan spesifik kelas
-    if (!isPerSekolahOnly && selectedClassId && asg.assignedClassIds && asg.assignedClassIds.length > 0) {
-      if (!asg.assignedClassIds.includes(selectedClassId) && !attendanceTeacherIds.has(asg.teacherId) && !subjectTeacherIds.has(asg.teacherId)) {
+    if (!isPerSekolahOnly && targetClassId && asg.assignedClassIds && asg.assignedClassIds.length > 0) {
+      const matchAnyClass = asg.assignedClassIds.some((cid) => matchesClass(cid));
+      if (!matchAnyClass && !attendanceTeacherIds.has(asg.teacherId) && !subjectTeacherIds.has(asg.teacherId)) {
         return;
       }
     }
@@ -177,9 +206,8 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
     const hasAtt = attendanceTeacherIds.has(t.id);
     const hasSubj = subjectTeacherIds.has(t.id);
 
-    if (isUnifiedPerKelas) {
-      // Pada dokumen per-kelas, sertakan guru yang aktif di kelas ini atau guru sekolah
-      if (hasAtt || hasSubj || (!selectedClassId && schoolTeachers.length <= 15)) {
+    if (docType === 'DAFTAR_HADIR_GURU') {
+      if (hasAtt || hasSubj || (!targetClassId && schoolTeachers.length <= 15)) {
         teacherCandidateMap.set(t.id, {
           id: `synth-${t.id}`,
           schoolId: school.id,
@@ -189,7 +217,7 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
           jabatan: 'GURU_BIDANG_STUDI' as const,
           roles: ['GURU_BIDANG_STUDI'],
           urutan: 99,
-          assignedClassIds: selectedClassId ? [selectedClassId] : [],
+          assignedClassIds: targetClassId ? [targetClassId] : [],
         });
       }
     } else if (hasAtt) {
@@ -202,7 +230,7 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
         jabatan: roleFilter as any,
         roles: [roleFilter],
         urutan: 99,
-        assignedClassIds: selectedClassId ? [selectedClassId] : [],
+        assignedClassIds: targetClassId ? [targetClassId] : [],
       });
     }
   });
@@ -210,19 +238,30 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   // 3. JAMINAN UTAMA: Setiap guru yang memiliki rekaman presensi di kelas/sekolah ini DIJAMIN MUNCUL di baris lembar cetak
   attendances.forEach((a) => {
     if (a.schoolId && a.schoolId !== school.id) return;
-    if (!isPerSekolahOnly && selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) return;
+    if (!matchesClass(a.classId)) return;
     const tid = a.teacherId;
     if (!tid) return;
 
-    // Filter dokumen spesifik jika bukan per-kelas terpadu
-    if (docType === 'DAFTAR_HADIR_GURU_BANTU' && a.roleUsed !== 'GURU_BANTU') return;
-    if (docType === 'DAFTAR_HADIR_GURU_DINIYAH' && a.roleUsed !== 'GURU_DINIYAH') return;
-    if (docType === 'DAFTAR_HADIR_KOKURIKULER' && a.roleUsed !== 'KOORDINATOR_KOKURIKULER' && !a.id.startsWith('att-koku-')) return;
+    // Filter dokumen spesifik
+    if (docType === 'DAFTAR_HADIR_GURU_BANTU' && a.roleUsed !== 'GURU_BANTU' && !a.roleUsed?.toLowerCase().includes('bantu')) return;
+    if (docType === 'DAFTAR_HADIR_GURU_DINIYAH' && a.roleUsed !== 'GURU_DINIYAH' && !a.roleUsed?.toLowerCase().includes('diniyah')) return;
+    if (docType === 'DAFTAR_HADIR_KOKURIKULER' && a.roleUsed !== 'KOORDINATOR_KOKURIKULER' && !a.id.startsWith('att-koku-') && !a.namaKegiatan?.toLowerCase().includes('p5')) return;
     if (docType === 'DAFTAR_HADIR_EKSTRAKURIKULER' && a.roleUsed !== 'PEMBINA_EKSTRAKURIKULER' && !a.id.startsWith('att-ekskul-')) return;
+    const rUsed = (a.roleUsed || '') as string;
+    if (
+      docType === 'DAFTAR_HADIR_GURU' &&
+      rUsed &&
+      rUsed !== 'GURU_BIDANG_STUDI' &&
+      rUsed !== 'GURU' &&
+      rUsed !== 'GURU_KELAS' &&
+      rUsed !== 'GURU_MAPEL' &&
+      rUsed !== 'WALI_KELAS'
+    )
+      return;
 
     if (!teacherCandidateMap.has(tid)) {
       const uObj = StorageService.getUserById(tid) || teachers.find((t) => t.id === tid);
-      const roleUsed = a.roleUsed || 'GURU_BIDANG_STUDI';
+      const roleUsed = a.roleUsed || roleFilter;
       let jbt = 'Guru Bidang Studi';
       if (roleUsed === 'GURU_BANTU') jbt = 'Guru Bantu';
       else if (roleUsed === 'GURU_DINIYAH') jbt = 'Guru Diniyah';
@@ -239,7 +278,7 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
         customJabatan: jbt,
         roles: [roleUsed],
         urutan: 99,
-        assignedClassIds: a.classId ? [a.classId] : (selectedClassId ? [selectedClassId] : []),
+        assignedClassIds: a.classId ? [a.classId] : (targetClassId ? [targetClassId] : []),
       });
     }
   });
@@ -260,6 +299,12 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   if (onlyTeacherId && finalAssignments.length === 0) {
     const user = teachers.find((u) => u.id === onlyTeacherId) || StorageService.getUserById(onlyTeacherId);
     if (user) {
+      let defaultJabatan = 'Guru Bidang Studi';
+      if (roleFilter === 'GURU_BANTU') defaultJabatan = 'Guru Bantu';
+      else if (roleFilter === 'GURU_DINIYAH') defaultJabatan = 'Guru Diniyah';
+      else if (roleFilter === 'KOORDINATOR_KOKURIKULER') defaultJabatan = 'Koord. Kokurikuler';
+      else if (roleFilter === 'PEMBINA_EKSTRAKURIKULER') defaultJabatan = 'Pembina Ekstrakurikuler';
+
       finalAssignments = [
         {
           id: `synth-${user.id}`,
@@ -267,10 +312,11 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
           teacherId: user.id,
           teacherName: user.name,
           nip: user.nip || '-',
-          jabatan: 'GURU_BIDANG_STUDI' as const,
+          jabatan: roleFilter as any,
+          customJabatan: defaultJabatan,
           roles: [roleFilter],
           urutan: 1,
-          assignedClassIds: selectedClassId ? [selectedClassId] : [],
+          assignedClassIds: targetClassId ? [targetClassId] : [],
         },
       ];
     }
@@ -297,19 +343,10 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
       } else if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') {
         jabatanLabel = 'Guru Diniyah';
       } else {
-        // Dokumen Per-Kelas Terpadu: Tampilkan label spesifik peran (Studi, Bantu, Diniyah)
-        const roles = asg.roles || [];
-        if (roles.includes('GURU_BANTU') && !roles.includes('GURU_BIDANG_STUDI')) {
-          jabatanLabel = 'Guru Bantu';
-        } else if (roles.includes('GURU_DINIYAH') && !roles.includes('GURU_BIDANG_STUDI')) {
-          jabatanLabel = 'Guru Diniyah';
-        } else if (roles.includes('GURU_BANTU') && roles.includes('GURU_BIDANG_STUDI')) {
-          jabatanLabel = teacherSubjs.length > 0 ? `Guru ${teacherSubjs[0].name} & Bantu` : 'Guru Studi & Bantu';
-        } else if (roles.includes('GURU_DINIYAH') && roles.includes('GURU_BIDANG_STUDI')) {
-          jabatanLabel = teacherSubjs.length > 0 ? `Guru ${teacherSubjs[0].name} & Diniyah` : 'Guru Studi & Diniyah';
-        } else if (teacherSubjs.length > 0) {
+        // DAFTAR_HADIR_GURU (Guru Bidang Studi)
+        if (teacherSubjs.length > 0) {
           jabatanLabel = `Guru ${teacherSubjs[0].name}`;
-        } else if (asg.jabatan) {
+        } else if (asg.jabatan && asg.jabatan !== 'GURU') {
           jabatanLabel = asg.jabatan.replace(/_/g, ' ');
         } else {
           jabatanLabel = 'Guru Bidang Studi';
@@ -327,32 +364,33 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   });
 
   const getAttendanceValue = (teacherId: string, day: number) => {
-    const dayStr = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     const userObj = teachers.find((u) => u.id === teacherId) || StorageService.getUserById(teacherId);
+    const targetRow = teacherRows.find((r) => r.teacherId === teacherId);
+    const targetName = (targetRow?.name || userObj?.name || '').trim().toLowerCase();
 
     const matchingEntries = attendances.filter((a) => {
-      // 1. Match identitas guru
+      // 1. Match identitas guru (by ID, nama guru di user, atau nama di baris tabel)
+      const aName = (a.teacherName || '').trim().toLowerCase();
       const matchTeacher =
         a.teacherId === teacherId ||
-        (userObj && a.teacherName && a.teacherName.trim().toLowerCase() === userObj.name.trim().toLowerCase()) ||
-        (userObj && a.teacherId === userObj.id);
+        (userObj && a.teacherId === userObj.id) ||
+        (targetName !== '' && aName === targetName) ||
+        (userObj && aName === userObj.name.trim().toLowerCase());
       if (!matchTeacher) return false;
 
       // 2. Normalisasi tanggal akurat (menghapus format ISO 'T' dan spasi)
-      const rawDate = (a.date || '').split('T')[0].trim();
-      const parts = rawDate.split('-').map((p) => p.trim());
-      if (parts.length !== 3) return false;
-      const aDateNorm = `${parts[0].padStart(4, '0')}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-      if (aDateNorm !== dayStr) return false;
+      const dateInfo = normalizeDateString(a.date);
+      if (!dateInfo) return false;
+      if (dateInfo.year !== selectedYear || dateInfo.month !== selectedMonth || dateInfo.day !== day) {
+        return false;
+      }
 
       // 3. Verifikasi sekolah
       if (a.schoolId && a.schoolId !== school.id) return false;
 
-      // 4. Verifikasi kelas jika dokumen per-kelas
+      // 4. Verifikasi kelas jika dokumen per-kelas (Wajib per-kelas)
       if (!isPerSekolahOnly) {
-        if (selectedClassId && a.classId && a.classId !== selectedClassId && a.classId !== className) {
-          return false;
-        }
+        if (!matchesClass(a.classId)) return false;
       }
 
       // 5. Verifikasi peran sesuai jenis dokumen
@@ -370,15 +408,22 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
           (a.namaKegiatan && !a.namaKegiatan.toLowerCase().includes('p5'))
         );
       }
-      if (docType === 'DAFTAR_HADIR_GURU_BANTU') return a.roleUsed === 'GURU_BANTU';
-      if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') return a.roleUsed === 'GURU_DINIYAH';
+      if (docType === 'DAFTAR_HADIR_GURU_BANTU') {
+        return a.roleUsed === 'GURU_BANTU' || a.roleUsed?.toLowerCase().includes('bantu');
+      }
+      if (docType === 'DAFTAR_HADIR_GURU_DINIYAH') {
+        return a.roleUsed === 'GURU_DINIYAH' || a.roleUsed?.toLowerCase().includes('diniyah');
+      }
 
-      // Dokumen per-kelas terpadu (DAFTAR_HADIR_GURU): Guru Study, Guru Bantu, dan Guru Diniyah masuk semua
+      // DAFTAR_HADIR_GURU: Guru Bidang Studi / Mapel / Guru Umum
+      const rUsed = (a.roleUsed || '') as string;
       return (
-        a.roleUsed === 'GURU_BIDANG_STUDI' ||
-        a.roleUsed === 'GURU_BANTU' ||
-        a.roleUsed === 'GURU_DINIYAH' ||
-        !a.roleUsed
+        !rUsed ||
+        rUsed === 'GURU_BIDANG_STUDI' ||
+        rUsed === 'GURU' ||
+        rUsed === 'GURU_KELAS' ||
+        rUsed === 'GURU_MAPEL' ||
+        rUsed === 'WALI_KELAS'
       );
     });
 
@@ -392,15 +437,15 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
   const getDocTitle = () => {
     switch (docType) {
       case 'DAFTAR_HADIR_GURU_BANTU':
-        return 'DAFTAR HADIR GURU BANTU (PER-KELAS)';
+        return 'DAFTAR HADIR GURU BANTU';
       case 'DAFTAR_HADIR_GURU_DINIYAH':
-        return 'DAFTAR HADIR GURU DINIYAH (PER-KELAS)';
+        return 'DAFTAR HADIR GURU DINIYAH';
       case 'DAFTAR_HADIR_KOKURIKULER':
-        return 'DAFTAR HADIR KOORDINATOR KOKURIKULER (P5) - TINGKAT PERSEKOLAH';
+        return 'DAFTAR HADIR KOORDINATOR KOKURIKULER (P5)';
       case 'DAFTAR_HADIR_EKSTRAKURIKULER':
-        return 'DAFTAR HADIR PEMBINA EKSTRAKURIKULER - TINGKAT PERSEKOLAH';
+        return 'DAFTAR HADIR PEMBINA EKSTRAKURIKULER';
       default:
-        return 'DAFTAR HADIR GURU KELAS (STUDI, BANTU & DINIYAH)';
+        return 'DAFTAR HADIR GURU';
     }
   };
 
@@ -523,7 +568,7 @@ export const PrintableAttendanceSheet: React.FC<PrintableAttendanceSheetProps> =
               <>
                 <span>Kelas: </span>
                 <span className="font-bold text-indigo-950 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-                  {className || 'Semua Kelas'}
+                  {targetClassName || className || 'Kelas'}
                 </span>
               </>
             )}
